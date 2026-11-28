@@ -1,6 +1,6 @@
 load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
 load("@nogo_analyzer_bzlmod//:def.bzl", "ANALYZERS", "staticcheck_analyzers")
-load("@rules_go//go:def.bzl", "TOOLS_NOGO", "nogo")
+load("@rules_go//go:def.bzl", "TOOLS_NOGO", "go_test", "nogo")
 load("@rules_shell//shell:sh_library.bzl", "sh_library")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load(":linters.bzl", "shellcheck_test")
@@ -115,6 +115,49 @@ sh_test(
     target_compatible_with = _GITLEAKS_COMPATIBLE,
 )
 
+sh_test(
+    name = "docsync_test",
+    size = "small",
+    srcs = ["docsync_test.sh"],
+    args = [
+        "$(rootpath //docsync/cmd/docsync)",
+        "$(rootpath //:go.mod)",
+    ],
+    data = [
+        "//:docsync.yml",
+        "//:go.mod",
+        "//docsync/cmd/docsync",
+    ],
+    tags = [
+        "external",
+        "local",
+    ],
+)
+
+go_test(
+    name = "go_default_test",
+    size = "small",
+    srcs = [
+        "bazel_go_files_test.go",
+        "release_config_test.go",
+    ],
+    data = [
+        "//:.goreleaser.yaml",
+        "//:.release-please-manifest.json",
+        "//:CHANGELOG.md",
+        "//.github:workflows/bazel-test.yml",
+        "//.github:workflows/release.yml",
+        "//.github:workflows/strip-pr-html-comments.yml",
+        "//:go.mod",
+        "//:release-please-config.json",
+    ],
+    tags = [
+        "external",
+        "local",
+    ],
+    deps = ["@in_gopkg_yaml_v3//:go_default_library"],
+)
+
 filegroup(
     name = "sh_srcs",
     srcs = glob(["*.sh"]),
@@ -124,6 +167,7 @@ sh_library(
     name = "repo_sh_srcs",
     srcs = [
         ":sh_srcs",
+        "//.githooks:sh_srcs",
         "//:sh_srcs",
         "//decide/contrib/panels:sh_srcs",
         "//decide/web:sh_srcs",

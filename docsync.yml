@@ -1,0 +1,158 @@
+# Curated code -> doc index for chorong-sh/chorong.
+# Matching is root-anchored (no implicit **/).
+# Validated automatically by //tools/lint:docsync_test (`make check`).
+
+version: 1
+rules:
+  # --- Repository root: build, CI, releases, and security ---
+  - match: ["Makefile", "MODULE.bazel", ".bazeliskrc", "BUILD.bazel", ".bazelrc", "go.mod"]
+    docs:
+      - path: README.md
+        section: "## Development"
+        why: "Make/Bazel targets and Go toolchain requirements"
+      - path: AGENTS.md
+        section: "## Automation & Workflow"
+        why: "make check / make format / make install workflow"
+
+  - match: ["tools/format/**", "tools/lint/**", ".githooks/**", ".gitleaks.toml", ".shellcheckrc"]
+    docs:
+      - path: SECURITY.md
+        section: "## Security Practices"
+        why: "nogo, shellcheck, gitleaks, and workflow pinning checks"
+      - path: AGENTS.md
+        section: "## Automation & Workflow"
+        why: "pre-commit and CI guardrails"
+
+  - match: [".github/workflows/bazel-test.yml"]
+    docs:
+      - path: SECURITY.md
+        section: "## Security Practices"
+        why: "automated CI checks on pull requests and main"
+
+  - match:
+      - ".github/workflows/release.yml"
+      - ".goreleaser.yaml"
+      - "release-please-config.json"
+      - ".release-please-manifest.json"
+      - "CHANGELOG.md"
+    docs:
+      - path: AGENTS.md
+        section: "## Versioning & Releases"
+        why: "single-tag SemVer policy, release-please, GoReleaser, and Homebrew tap"
+      - path: README.md
+        section: "## Quick Start"
+        why: "Homebrew tap and prebuilt binary release channels"
+
+  - match: [".github/workflows/strip-pr-html-comments.yml", ".github/pull_request_template.md"]
+    docs:
+      - path: AGENTS.md
+        section: "## Pull Requests"
+        why: "squash-merge commit messages and PR template rules"
+
+  - match: ["PklProject", "PklProject.deps.json"]
+    docs:
+      - path: gh-nudge/README.md
+        why: "Pkl configuration schema and codegen"
+      - path: orgctl/README.md
+        why: "Pkl org spec schema"
+
+  # --- Wave 1 tools ---
+  - match: ["factory/**"]
+    docs:
+      - path: factory/README.md
+        why: "tool overview and quick start"
+      - path: factory/docs/usage.md
+        why: "configuration, CLI commands, and behavior reference"
+
+  - match: ["decide/emacs/**"]
+    docs:
+      - path: decide/docs/emacs.md
+        why: "decide Emacs frontend setup and keybindings"
+      - path: decide/README.md
+        why: "decide overview and Emacs section"
+
+  - match: ["decide/web/**", "decide/cmd/decide/web.go"]
+    docs:
+      - path: decide/docs/web.md
+        why: "decide web setup, auth, ingress, and Web Push"
+      - path: decide/README.md
+        why: "decide overview and web/mobile summary"
+
+  - match: ["decide/**"]
+    docs:
+      - path: decide/README.md
+        why: "tool overview, quick start, and architecture"
+
+  - match: ["agentbus/**"]
+    docs:
+      - path: agentbus/README.md
+        why: "tool overview, commands, and docs index"
+
+  - match: ["prsync/**"]
+    docs:
+      - path: prsync/README.md
+        why: "tool overview, command synopsis, and configuration"
+
+  - match: ["orgctl/**"]
+    docs:
+      - path: orgctl/README.md
+        why: "tool overview and Pkl spec guide"
+      - path: orgctl/docs/reference.md
+        why: "plan/drift line reference"
+
+  - match: ["gh-nudge/cmd/gh-nudge/**", "gh-nudge/internal/notification/**"]
+    docs:
+      - path: gh-nudge/nudge.md
+        why: "gh-nudge CLI flags and notification persistence"
+      - path: gh-nudge/README.md
+        why: "gh-nudge suite index"
+
+  - match: ["gh-nudge/cmd/gh-slack/**", "gh-nudge/internal/slack/**"]
+    docs:
+      - path: gh-nudge/slack.md
+        why: "gh-slack usage and GitHub-to-Slack mapping"
+
+  - match: ["gh-nudge/cmd/gh-approve/**", "gh-nudge/internal/approve/**"]
+    docs:
+      - path: gh-nudge/gh-approve.md
+        why: "gh-approve rules, caching, and usage"
+
+  - match: ["gh-nudge/cmd/gh-merge/**"]
+    docs:
+      - path: gh-nudge/merge.md
+        why: "gh-merge CLI and merge rules"
+
+  - match: ["gh-nudge/cmd/gh-codeowners/**", "gh-nudge/internal/codeowners/**"]
+    docs:
+      - path: gh-nudge/codeowners.md
+        why: "gh-codeowners CLI and matching rules"
+
+  - match: ["gh-nudge/cmd/gh-throttle/**"]
+    docs:
+      - path: gh-nudge/gh-throttle.md
+        why: "gh-throttle shared rate-limit queue"
+
+  - match: ["gh-nudge/cmd/gh-storage/**", "gh-nudge/internal/storage/**"]
+    docs:
+      - path: gh-nudge/storage.md
+        why: "gh-storage unified storage commands"
+
+  - match: ["gh-nudge/**"]
+    docs:
+      - path: gh-nudge/README.md
+        why: "gh-nudge suite overview"
+
+  - match: ["gh-ask/**"]
+    docs:
+      - path: gh-ask/README.md
+        why: "gh-ask setup, configuration, HTTP API, and userscript"
+
+  - match: ["docsync/**"]
+    docs:
+      - path: docsync/README.md
+        why: "docsync CLI, mapping schema, and exit codes"
+
+  - match: ["genfiles/**", "pkg/genfiles/**"]
+    docs:
+      - path: genfiles/README.md
+        why: "genfiles CLI and generated_files.yaml schema"

@@ -1,0 +1,4 @@
+exports_files(
+    glob(["workflows/*.yml"]),
+    visibility = ["//tools/lint:__pkg__"],
+)
