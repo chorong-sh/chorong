@@ -1,0 +1,47 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "go_default_library",
+    srcs = [
+        "discover.go",
+        "health.go",
+        "hibernate.go",
+        "livecache.go",
+        "registry.go",
+    ],
+    importpath = "github.com/chorong-sh/chorong/agentbus/internal/registry",
+    visibility = ["//agentbus:__subpackages__"],
+    deps = [
+        "//agentbus/internal/adapter:go_default_library",
+        "//agentbus/internal/eventlog:go_default_library",
+        "//agentbus/internal/hibernate:go_default_library",
+    ],
+)
+
+go_test(
+    name = "go_default_test",
+    srcs = [
+        "discover_test.go",
+        "health_test.go",
+        "hibernate_test.go",
+        "livecache_test.go",
+        "registry_test.go",
+    ],
+    embed = [":go_default_library"],
+    deps = [
+        "//agentbus/internal/adapter:go_default_library",
+        "//agentbus/internal/adapter/fake:go_default_library",
+        "//agentbus/internal/adapter/herdr:go_default_library",
+        "//agentbus/internal/eventlog:go_default_library",
+        "//agentbus/internal/hibernate:go_default_library",
+    ],
+)
+
+filegroup(
+    name = "go_srcs",
+    srcs = glob(
+        ["**/*.go"],
+        exclude = ["**/*_test.go"],
+    ),
+    visibility = ["//tools/lint:__pkg__"],
+)

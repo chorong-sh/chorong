@@ -1,0 +1,51 @@
+# Githooks trust markers (per-user decision)
+.githooks/trust-all
+
+# AI coder local state
+.aider*
+.cursor
+.omc/
+.roo
+.roomodes
+.saved-claude-sessions
+docs/superpowers/
+
+# Bazel
+.bazel_output
+bazel-bin
+bazel-chorong*
+bazel-out
+bazel-testlogs
+.bazelrc.user
+.bazelrc.local
+
+# GoReleaser
+dist/
+
+# Logs
+logs
+*.log
+
+# Environment variables
+.env
+.envrc
+.dir-locals.el
+
+# Editor directories and files
+.idea
+.vscode
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS specific
+.DS_Store
+
+# Coverage reports
+lcov.info
+coverage/
+
+# Project-local temp directory
+.tmp/

@@ -1,0 +1,37 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "go_default_library",
+    srcs = ["snapshot.go"],
+    importpath = "github.com/chorong-sh/chorong/factory/internal/snapshot",
+    visibility = ["//factory:__subpackages__"],
+    deps = [
+        "//factory/internal/gh:go_default_library",
+        "//factory/internal/herdr:go_default_library",
+        "//factory/internal/ready:go_default_library",
+        "//factory/internal/source:go_default_library",
+        "//factory/internal/store:go_default_library",
+    ],
+)
+
+go_test(
+    name = "go_default_test",
+    srcs = ["snapshot_test.go"],
+    deps = [
+        ":go_default_library",
+        "//factory/internal/gh:go_default_library",
+        "//factory/internal/herdr:go_default_library",
+        "//factory/internal/source:go_default_library",
+        "//factory/internal/store:go_default_library",
+        "@com_github_jaeyeom_go_cmdexec//:go_default_library",
+    ],
+)
+
+filegroup(
+    name = "go_srcs",
+    srcs = glob(
+        ["**/*.go"],
+        exclude = ["**/*_test.go"],
+    ),
+    visibility = ["//tools/lint:__pkg__"],
+)

@@ -1,0 +1,11 @@
+exports_files([
+    "BUILD.bazel",
+    "README.md",
+    "prsync.config.example",
+])
+
+filegroup(
+    name = "contrib_srcs",
+    srcs = glob(["contrib/*"]),
+    visibility = ["//prsync:__subpackages__"],
+)

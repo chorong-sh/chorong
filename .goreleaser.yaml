@@ -1,0 +1,326 @@
+version: 2
+
+project_name: chorong
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: factory
+    main: ./factory/cmd/factory
+    binary: factory
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ldflags: [-s -w -X github.com/chorong-sh/chorong/pkg/version.Version=v{{.Version}}]
+
+  - id: decide
+    main: ./decide/cmd/decide
+    binary: decide
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ldflags: [-s -w -X github.com/chorong-sh/chorong/pkg/version.Version=v{{.Version}}]
+
+  - id: agentbus
+    main: ./agentbus/cmd/agentbus
+    binary: agentbus
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ldflags: [-s -w -X github.com/chorong-sh/chorong/pkg/version.Version=v{{.Version}}]
+
+  - id: agentbusd
+    main: ./agentbus/cmd/agentbusd
+    binary: agentbusd
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ldflags: [-s -w -X github.com/chorong-sh/chorong/pkg/version.Version=v{{.Version}}]
+
+  - id: prsync
+    main: ./prsync/cmd/prsync
+    binary: prsync
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ldflags: [-s -w -X github.com/chorong-sh/chorong/pkg/version.Version=v{{.Version}}]
+
+  - id: orgctl
+    main: ./orgctl/cmd/orgctl
+    binary: orgctl
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ldflags: [-s -w -X github.com/chorong-sh/chorong/pkg/version.Version=v{{.Version}}]
+
+  - id: gh-nudge
+    main: ./gh-nudge/cmd/gh-nudge
+    binary: gh-nudge
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ldflags: [-s -w -X github.com/chorong-sh/chorong/pkg/version.Version=v{{.Version}}]
+
+  - id: gh-slack
+    main: ./gh-nudge/cmd/gh-slack
+    binary: gh-slack
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ldflags: [-s -w -X github.com/chorong-sh/chorong/pkg/version.Version=v{{.Version}}]
+
+  - id: gh-approve
+    main: ./gh-nudge/cmd/gh-approve
+    binary: gh-approve
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ldflags: [-s -w -X github.com/chorong-sh/chorong/pkg/version.Version=v{{.Version}}]
+
+  - id: gh-merge
+    main: ./gh-nudge/cmd/gh-merge
+    binary: gh-merge
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ldflags: [-s -w -X github.com/chorong-sh/chorong/pkg/version.Version=v{{.Version}}]
+
+  - id: gh-codeowners
+    main: ./gh-nudge/cmd/gh-codeowners
+    binary: gh-codeowners
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ldflags: [-s -w -X github.com/chorong-sh/chorong/pkg/version.Version=v{{.Version}}]
+
+  - id: gh-throttle
+    main: ./gh-nudge/cmd/gh-throttle
+    binary: gh-throttle
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ldflags: [-s -w -X github.com/chorong-sh/chorong/pkg/version.Version=v{{.Version}}]
+
+  - id: gh-storage
+    main: ./gh-nudge/cmd/gh-storage
+    binary: gh-storage
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ldflags: [-s -w -X github.com/chorong-sh/chorong/pkg/version.Version=v{{.Version}}]
+
+  - id: gh-ask
+    main: ./gh-ask/cmd/gh-ask
+    binary: gh-ask
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ldflags: [-s -w -X github.com/chorong-sh/chorong/pkg/version.Version=v{{.Version}}]
+
+  - id: docsync
+    main: ./docsync/cmd/docsync
+    binary: docsync
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ldflags: [-s -w -X github.com/chorong-sh/chorong/pkg/version.Version=v{{.Version}}]
+
+  - id: genfiles
+    main: ./genfiles/cmd/genfiles
+    binary: genfiles
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ldflags: [-s -w -X github.com/chorong-sh/chorong/pkg/version.Version=v{{.Version}}]
+
+archives:
+  - id: chorong
+    name_template: "chorong_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    files: [LICENSE, README.md]
+
+  - id: factory
+    ids: [factory]
+    name_template: "factory_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    files: [LICENSE, factory/README.md]
+
+  - id: decide
+    ids: [decide]
+    name_template: "decide_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    files: [LICENSE, decide/README.md]
+
+  - id: agentbus
+    ids: [agentbus, agentbusd]
+    name_template: "agentbus_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    files: [LICENSE, agentbus/README.md]
+
+  - id: prsync
+    ids: [prsync]
+    name_template: "prsync_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    files: [LICENSE, prsync/README.md]
+
+  - id: orgctl
+    ids: [orgctl]
+    name_template: "orgctl_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    files: [LICENSE, orgctl/README.md]
+
+  - id: gh-nudge
+    ids: [gh-nudge, gh-slack, gh-approve, gh-merge, gh-codeowners, gh-throttle, gh-storage]
+    name_template: "gh-nudge_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    files: [LICENSE, gh-nudge/README.md]
+
+  - id: gh-ask
+    ids: [gh-ask]
+    name_template: "gh-ask_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    files: [LICENSE, gh-ask/README.md]
+
+  - id: docsync
+    ids: [docsync]
+    name_template: "docsync_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    files: [LICENSE, docsync/README.md]
+
+  - id: genfiles
+    ids: [genfiles]
+    name_template: "genfiles_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    files: [LICENSE, genfiles/README.md]
+
+checksum:
+  name_template: "checksums.txt"
+
+release:
+  github:
+    owner: chorong-sh
+    name: chorong
+  mode: append
+
+brews:
+  - name: chorong
+    ids: [chorong]
+    homepage: "https://chorong.sh"
+    description: "Composable CLI tools for a human-in-the-loop coding agent factory"
+    license: "Apache-2.0"
+    repository:
+      owner: chorong-sh
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    conflicts:
+      - factory
+      - decide
+      - agentbus
+      - prsync
+      - orgctl
+      - gh-nudge
+      - gh-ask
+      - docsync
+      - genfiles
+
+  - name: factory
+    ids: [factory]
+    homepage: "https://chorong.sh"
+    description: "Mirror Jira/GitHub issues, rank ready work, enforce start gates, and dispatch coding agents"
+    license: "Apache-2.0"
+    repository:
+      owner: chorong-sh
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+
+  - name: decide
+    ids: [decide]
+    homepage: "https://chorong.sh"
+    description: "Human-in-the-loop inbox for coding agent questions and approvals"
+    license: "Apache-2.0"
+    repository:
+      owner: chorong-sh
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+
+  - name: agentbus
+    ids: [agentbus]
+    homepage: "https://chorong.sh"
+    description: "Local message bus and checkout leases between coding agents"
+    license: "Apache-2.0"
+    repository:
+      owner: chorong-sh
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+
+  - name: prsync
+    ids: [prsync]
+    homepage: "https://chorong.sh"
+    description: "Match open pull requests to live coding agent tabs"
+    license: "Apache-2.0"
+    repository:
+      owner: chorong-sh
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+
+  - name: orgctl
+    ids: [orgctl]
+    homepage: "https://chorong.sh"
+    description: "Diff a declarative agent-team spec against live tabs, names, and scheduled jobs"
+    license: "Apache-2.0"
+    repository:
+      owner: chorong-sh
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+
+  - name: gh-nudge
+    ids: [gh-nudge]
+    homepage: "https://chorong.sh"
+    description: "GitHub PR workflow CLI suite (gh-nudge, gh-approve, gh-merge, gh-throttle, gh-codeowners, gh-slack, gh-storage)"
+    license: "Apache-2.0"
+    repository:
+      owner: chorong-sh
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+
+  - name: gh-ask
+    ids: [gh-ask]
+    homepage: "https://chorong.sh"
+    description: "Hand a question about a pull-request commit range to any command"
+    license: "Apache-2.0"
+    repository:
+      owner: chorong-sh
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+
+  - name: docsync
+    ids: [docsync]
+    homepage: "https://chorong.sh"
+    description: "List documentation files likely made stale by a code change"
+    license: "Apache-2.0"
+    repository:
+      owner: chorong-sh
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+
+  - name: genfiles
+    ids: [genfiles]
+    homepage: "https://chorong.sh"
+    description: "Verify generated files and their regeneration commands stay in sync"
+    license: "Apache-2.0"
+    repository:
+      owner: chorong-sh
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula

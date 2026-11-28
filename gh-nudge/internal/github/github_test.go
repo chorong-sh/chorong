@@ -1,0 +1,1255 @@
+package github
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/chorong-sh/chorong/gh-nudge/internal/models"
+	cmdexec "github.com/jaeyeom/go-cmdexec"
+)
+
+// TestNewClient tests the behavior of creating a new GitHub client.
+func TestNewClient(t *testing.T) {
+	t.Run("creates client with provided executor", func(t *testing.T) {
+		executor := &mockExecutor{output: "test"}
+		client := NewClientWithExecutor(executor)
+		if client == nil {
+			t.Fatal("expected client to be created, got nil")
+		}
+	})
+}
+
+// TestGetPendingPullRequests tests the behavior of fetching pending pull requests.
+func TestGetPendingPullRequests(t *testing.T) {
+	t.Run("returns error when gh command fails", func(t *testing.T) {
+		client := NewClientWithExecutor(&mockExecutor{shouldFail: true})
+		prs, err := client.GetPendingPullRequests()
+		if err == nil {
+			t.Error("expected error when gh command fails, got nil")
+		}
+		if prs != nil {
+			t.Errorf("expected nil PRs on error, got %v", prs)
+		}
+		if !strings.Contains(err.Error(), "failed to execute gh command") {
+			t.Errorf("expected error to mention command execution, got: %v", err)
+		}
+	})
+
+	t.Run("returns error when JSON is invalid", func(t *testing.T) {
+		client := NewClientWithExecutor(&mockExecutor{output: "invalid json"})
+		prs, err := client.GetPendingPullRequests()
+		if err == nil {
+			t.Error("expected error when JSON is invalid, got nil")
+		}
+		if prs != nil {
+			t.Errorf("expected nil PRs on parse error, got %v", prs)
+		}
+		if !strings.Contains(err.Error(), "parse gh pr list") {
+			t.Errorf("expected error to mention parsing, got: %v", err)
+		}
+	})
+
+	t.Run("parses single PR with all fields", func(t *testing.T) {
+		sampleJSON := `[
+			{
+				"title": "Add new feature",
+				"url": "https://github.com/org/repo/pull/123",
+				"headRefName": "feature/new-feature",
+				"mergeable": "MERGEABLE",
+				"files": [
+					{
+						"path": "src/main.go",
+						"additions": 50,
+						"deletions": 10
+					}
+				],
+				"reviewRequests": [
+					{
+						"__typename": "User",
+						"login": "reviewer1"
+					}
+				]
+			}
+		]`
+
+		client := NewClientWithExecutor(&mockExecutor{output: sampleJSON})
+		prs, err := client.GetPendingPullRequests()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(prs) != 1 {
+			t.Fatalf("expected 1 PR, got %d", len(prs))
+		}
+
+		pr := prs[0]
+		if pr.Title != "Add new feature" {
+			t.Errorf("expected title 'Add new feature', got %q", pr.Title)
+		}
+		if pr.URL != "https://github.com/org/repo/pull/123" {
+			t.Errorf("expected specific URL, got %q", pr.URL)
+		}
+		if pr.HeadRefName != "feature/new-feature" {
+			t.Errorf("expected headRefName 'feature/new-feature', got %q", pr.HeadRefName)
+		}
+		if pr.Mergeable != "MERGEABLE" {
+			t.Errorf("expected mergeable 'MERGEABLE', got %q", pr.Mergeable)
+		}
+		if len(pr.Files) != 1 {
+			t.Fatalf("expected 1 file, got %d", len(pr.Files))
+		}
+		if pr.Files[0].Path != "src/main.go" {
+			t.Errorf("expected file path 'src/main.go', got %q", pr.Files[0].Path)
+		}
+		if len(pr.ReviewRequests) != 1 {
+			t.Fatalf("expected 1 review request, got %d", len(pr.ReviewRequests))
+		}
+		if pr.ReviewRequests[0].Login != "reviewer1" {
+			t.Errorf("expected reviewer 'reviewer1', got %q", pr.ReviewRequests[0].Login)
+		}
+	})
+
+	t.Run("parses multiple PRs", func(t *testing.T) {
+		sampleJSON := `[
+			{
+				"title": "First PR",
+				"url": "https://github.com/org/repo/pull/1",
+				"files": [],
+				"reviewRequests": []
+			},
+			{
+				"title": "Second PR",
+				"url": "https://github.com/org/repo/pull/2",
+				"files": [],
+				"reviewRequests": []
+			}
+		]`
+
+		client := NewClientWithExecutor(&mockExecutor{output: sampleJSON})
+		prs, err := client.GetPendingPullRequests()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(prs) != 2 {
+			t.Fatalf("expected 2 PRs, got %d", len(prs))
+		}
+
+		if prs[0].Title != "First PR" {
+			t.Errorf("expected first PR title 'First PR', got %q", prs[0].Title)
+		}
+		if prs[1].Title != "Second PR" {
+			t.Errorf("expected second PR title 'Second PR', got %q", prs[1].Title)
+		}
+	})
+
+	t.Run("handles empty PR list", func(t *testing.T) {
+		client := NewClientWithExecutor(&mockExecutor{output: "[]"})
+		prs, err := client.GetPendingPullRequests()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(prs) != 0 {
+			t.Errorf("expected empty PR list, got %d PRs", len(prs))
+		}
+	})
+
+	t.Run("parses PR with team review requests", func(t *testing.T) {
+		sampleJSON := `[
+			{
+				"title": "Team Review PR",
+				"url": "https://github.com/org/repo/pull/456",
+				"files": [],
+				"reviewRequests": [
+					{
+						"__typename": "Team",
+						"name": "Core Team",
+						"slug": "core-team"
+					}
+				]
+			}
+		]`
+
+		client := NewClientWithExecutor(&mockExecutor{output: sampleJSON})
+		prs, err := client.GetPendingPullRequests()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(prs) != 1 {
+			t.Fatalf("expected 1 PR, got %d", len(prs))
+		}
+
+		if len(prs[0].ReviewRequests) != 1 {
+			t.Fatalf("expected 1 review request, got %d", len(prs[0].ReviewRequests))
+		}
+
+		rr := prs[0].ReviewRequests[0]
+		if rr.Type != "Team" {
+			t.Errorf("expected type 'Team', got %q", rr.Type)
+		}
+		if rr.Name != "Core Team" {
+			t.Errorf("expected name 'Core Team', got %q", rr.Name)
+		}
+		if rr.Slug != "core-team" {
+			t.Errorf("expected slug 'core-team', got %q", rr.Slug)
+		}
+	})
+
+	t.Run("parses PR with statusCheckRollup", func(t *testing.T) {
+		sampleJSON := `[
+			{
+				"title": "PR with checks",
+				"url": "https://github.com/org/repo/pull/100",
+				"files": [],
+				"reviewRequests": [],
+				"mergeable": "MERGEABLE",
+				"statusCheckRollup": [
+					{
+						"name": "build",
+						"status": "COMPLETED",
+						"conclusion": "SUCCESS"
+					},
+					{
+						"name": "test",
+						"status": "COMPLETED",
+						"conclusion": "FAILURE"
+					},
+					{
+						"name": "lint",
+						"status": "IN_PROGRESS",
+						"conclusion": ""
+					}
+				]
+			}
+		]`
+
+		client := NewClientWithExecutor(&mockExecutor{output: sampleJSON})
+		prs, err := client.GetPendingPullRequests()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(prs) != 1 {
+			t.Fatalf("expected 1 PR, got %d", len(prs))
+		}
+
+		pr := prs[0]
+		if len(pr.StatusCheckRollup) != 3 {
+			t.Fatalf("expected 3 status checks, got %d", len(pr.StatusCheckRollup))
+		}
+
+		if pr.StatusCheckRollup[0].Name != "build" || pr.StatusCheckRollup[0].Conclusion != "SUCCESS" {
+			t.Errorf("unexpected first check: %+v", pr.StatusCheckRollup[0])
+		}
+		if pr.StatusCheckRollup[1].Name != "test" || pr.StatusCheckRollup[1].Conclusion != "FAILURE" {
+			t.Errorf("unexpected second check: %+v", pr.StatusCheckRollup[1])
+		}
+		if pr.StatusCheckRollup[2].Name != "lint" || pr.StatusCheckRollup[2].Status != "IN_PROGRESS" {
+			t.Errorf("unexpected third check: %+v", pr.StatusCheckRollup[2])
+		}
+	})
+
+	t.Run("parses PR without statusCheckRollup field", func(t *testing.T) {
+		sampleJSON := `[
+			{
+				"title": "Old PR",
+				"url": "https://github.com/org/repo/pull/50",
+				"files": [],
+				"reviewRequests": []
+			}
+		]`
+
+		client := NewClientWithExecutor(&mockExecutor{output: sampleJSON})
+		prs, err := client.GetPendingPullRequests()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(prs) != 1 {
+			t.Fatalf("expected 1 PR, got %d", len(prs))
+		}
+
+		if len(prs[0].StatusCheckRollup) != 0 {
+			t.Errorf("expected empty StatusCheckRollup, got %d entries", len(prs[0].StatusCheckRollup))
+		}
+	})
+
+	t.Run("skips draft PRs", func(t *testing.T) {
+		sampleJSON := `[
+			{
+				"title": "Draft PR",
+				"url": "https://github.com/org/repo/pull/1",
+				"files": [],
+				"reviewRequests": [{"__typename": "User", "login": "reviewer"}],
+				"isDraft": true
+			},
+			{
+				"title": "Ready PR",
+				"url": "https://github.com/org/repo/pull/2",
+				"files": [],
+				"reviewRequests": [{"__typename": "User", "login": "reviewer"}],
+				"isDraft": false
+			}
+		]`
+
+		client := NewClientWithExecutor(&mockExecutor{output: sampleJSON})
+		prs, err := client.GetPendingPullRequests()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(prs) != 1 {
+			t.Fatalf("expected 1 non-draft PR, got %d", len(prs))
+		}
+		if prs[0].Title != "Ready PR" {
+			t.Errorf("expected non-draft PR to be returned, got %q", prs[0].Title)
+		}
+	})
+
+	t.Run("treats PRs without isDraft field as non-draft", func(t *testing.T) {
+		sampleJSON := `[
+			{
+				"title": "PR without isDraft",
+				"url": "https://github.com/org/repo/pull/1",
+				"files": [],
+				"reviewRequests": []
+			}
+		]`
+
+		client := NewClientWithExecutor(&mockExecutor{output: sampleJSON})
+		prs, err := client.GetPendingPullRequests()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(prs) != 1 {
+			t.Fatalf("expected 1 PR, got %d", len(prs))
+		}
+		if prs[0].IsDraft {
+			t.Error("expected PR without isDraft field to default to non-draft")
+		}
+	})
+
+	t.Run("parses PR labels", func(t *testing.T) {
+		sampleJSON := `[
+			{
+				"title": "Labeled PR",
+				"url": "https://github.com/org/repo/pull/1",
+				"files": [],
+				"reviewRequests": [],
+				"labels": [
+					{"name": "ready-for-review"},
+					{"name": "backend"}
+				]
+			}
+		]`
+
+		client := NewClientWithExecutor(&mockExecutor{output: sampleJSON})
+		prs, err := client.GetPendingPullRequests()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(prs) != 1 {
+			t.Fatalf("expected 1 PR, got %d", len(prs))
+		}
+		if len(prs[0].Labels) != 2 {
+			t.Fatalf("expected 2 labels, got %d", len(prs[0].Labels))
+		}
+		if prs[0].Labels[0].Name != "ready-for-review" {
+			t.Errorf("expected first label 'ready-for-review', got %q", prs[0].Labels[0].Name)
+		}
+		if prs[0].Labels[1].Name != "backend" {
+			t.Errorf("expected second label 'backend', got %q", prs[0].Labels[1].Name)
+		}
+	})
+
+	t.Run("treats PRs without labels field as unlabeled", func(t *testing.T) {
+		sampleJSON := `[
+			{
+				"title": "Unlabeled PR",
+				"url": "https://github.com/org/repo/pull/1",
+				"files": [],
+				"reviewRequests": []
+			}
+		]`
+
+		client := NewClientWithExecutor(&mockExecutor{output: sampleJSON})
+		prs, err := client.GetPendingPullRequests()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(prs) != 1 {
+			t.Fatalf("expected 1 PR, got %d", len(prs))
+		}
+		if len(prs[0].Labels) != 0 {
+			t.Errorf("expected no labels, got %d", len(prs[0].Labels))
+		}
+	})
+
+	t.Run("requests labels in gh pr list JSON fields", func(t *testing.T) {
+		executor := &mockExecutor{captureArgs: true, output: "[]"}
+		client := NewClientWithExecutor(executor)
+
+		if _, err := client.GetPendingPullRequests(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if !executor.wasCalled {
+			t.Fatal("expected executor to be called")
+		}
+
+		jsonFields := jsonFieldsArg(t, executor.lastArgs)
+		if !strings.Contains(jsonFields, "labels") {
+			t.Errorf("expected --json fields to include labels, got %q", jsonFields)
+		}
+	})
+
+	t.Run("requests latestReviews in gh pr list JSON fields", func(t *testing.T) {
+		executor := &mockExecutor{captureArgs: true, output: "[]"}
+		client := NewClientWithExecutor(executor)
+
+		if _, err := client.GetPendingPullRequests(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		jsonFields := jsonFieldsArg(t, executor.lastArgs)
+		if !strings.Contains(jsonFields, "latestReviews") {
+			t.Errorf("expected --json fields to include latestReviews, got %q", jsonFields)
+		}
+	})
+
+	t.Run("parses latestReviews", func(t *testing.T) {
+		sampleJSON := `[
+			{
+				"title": "Reviewed PR",
+				"url": "https://github.com/org/repo/pull/1",
+				"files": [],
+				"reviewRequests": [{"__typename": "User", "login": "alice"}],
+				"latestReviews": [
+					{
+						"author": {"login": "alice"},
+						"submittedAt": "2026-03-01T15:04:05Z",
+						"state": "CHANGES_REQUESTED"
+					},
+					{
+						"author": {"login": "bob"},
+						"submittedAt": "2026-03-01T16:00:00Z",
+						"state": "APPROVED"
+					}
+				]
+			}
+		]`
+
+		client := NewClientWithExecutor(&mockExecutor{output: sampleJSON})
+		prs, err := client.GetPendingPullRequests()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(prs) != 1 {
+			t.Fatalf("expected 1 PR, got %d", len(prs))
+		}
+		if len(prs[0].LatestReviews) != 2 {
+			t.Fatalf("expected 2 latest reviews, got %d", len(prs[0].LatestReviews))
+		}
+
+		alice := prs[0].LatestReviews[0]
+		if alice.Author.Login != "alice" {
+			t.Errorf("expected first review author alice, got %q", alice.Author.Login)
+		}
+		if alice.State != "CHANGES_REQUESTED" {
+			t.Errorf("expected first review state CHANGES_REQUESTED, got %q", alice.State)
+		}
+		wantAliceAt := mustParseTime(t, "2026-03-01T15:04:05Z")
+		if !alice.SubmittedAt.Equal(wantAliceAt) {
+			t.Errorf("expected alice submittedAt %v, got %v", wantAliceAt, alice.SubmittedAt)
+		}
+
+		bob := prs[0].LatestReviews[1]
+		if bob.Author.Login != "bob" {
+			t.Errorf("expected second review author bob, got %q", bob.Author.Login)
+		}
+		if bob.State != "APPROVED" {
+			t.Errorf("expected second review state APPROVED, got %q", bob.State)
+		}
+	})
+
+	t.Run("treats PRs without latestReviews field as unreviewed", func(t *testing.T) {
+		sampleJSON := `[
+			{
+				"title": "Unreviewed PR",
+				"url": "https://github.com/org/repo/pull/1",
+				"files": [],
+				"reviewRequests": []
+			}
+		]`
+
+		client := NewClientWithExecutor(&mockExecutor{output: sampleJSON})
+		prs, err := client.GetPendingPullRequests()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(prs) != 1 {
+			t.Fatalf("expected 1 PR, got %d", len(prs))
+		}
+		if len(prs[0].LatestReviews) != 0 {
+			t.Errorf("expected no latest reviews, got %d", len(prs[0].LatestReviews))
+		}
+	})
+
+	t.Run("parses latestReviews with null author", func(t *testing.T) {
+		sampleJSON := `[
+			{
+				"title": "Deleted reviewer PR",
+				"url": "https://github.com/org/repo/pull/1",
+				"files": [],
+				"reviewRequests": [],
+				"latestReviews": [
+					{
+						"author": null,
+						"submittedAt": "2026-03-01T15:04:05Z",
+						"state": "COMMENTED"
+					}
+				]
+			}
+		]`
+
+		client := NewClientWithExecutor(&mockExecutor{output: sampleJSON})
+		prs, err := client.GetPendingPullRequests()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(prs) != 1 {
+			t.Fatalf("expected 1 PR, got %d", len(prs))
+		}
+		if len(prs[0].LatestReviews) != 1 {
+			t.Fatalf("expected 1 latest review, got %d", len(prs[0].LatestReviews))
+		}
+		if prs[0].LatestReviews[0].Author.Login != "" {
+			t.Errorf("expected empty author login for null author, got %q", prs[0].LatestReviews[0].Author.Login)
+		}
+	})
+
+	t.Run("parses PR with multiple files", func(t *testing.T) {
+		sampleJSON := `[
+			{
+				"title": "Multi-file PR",
+				"url": "https://github.com/org/repo/pull/789",
+				"files": [
+					{
+						"path": "file1.go",
+						"additions": 10,
+						"deletions": 5
+					},
+					{
+						"path": "file2.go",
+						"additions": 20,
+						"deletions": 15
+					}
+				],
+				"reviewRequests": []
+			}
+		]`
+
+		client := NewClientWithExecutor(&mockExecutor{output: sampleJSON})
+		prs, err := client.GetPendingPullRequests()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(prs) != 1 {
+			t.Fatalf("expected 1 PR, got %d", len(prs))
+		}
+
+		if len(prs[0].Files) != 2 {
+			t.Fatalf("expected 2 files, got %d", len(prs[0].Files))
+		}
+
+		file1 := prs[0].Files[0]
+		if file1.Path != "file1.go" || file1.Additions != 10 || file1.Deletions != 5 {
+			t.Errorf("unexpected file1 data: %+v", file1)
+		}
+
+		file2 := prs[0].Files[1]
+		if file2.Path != "file2.go" || file2.Additions != 20 || file2.Deletions != 15 {
+			t.Errorf("unexpected file2 data: %+v", file2)
+		}
+	})
+}
+
+// TestGetMergeablePullRequests tests the behavior of filtering mergeable PRs.
+func TestGetMergeablePullRequests(t *testing.T) {
+	t.Run("returns error when GetPendingPullRequests fails", func(t *testing.T) {
+		client := NewClientWithExecutor(&mockExecutor{shouldFail: true})
+		prs, err := client.GetMergeablePullRequests()
+		if err == nil {
+			t.Error("expected error when underlying call fails, got nil")
+		}
+		if prs != nil {
+			t.Errorf("expected nil PRs on error, got %v", prs)
+		}
+	})
+
+	t.Run("filters out PRs with pending review requests", func(t *testing.T) {
+		sampleJSON := `[
+			{
+				"title": "PR with reviews",
+				"url": "https://github.com/org/repo/pull/1",
+				"mergeable": "MERGEABLE",
+				"files": [],
+				"reviewRequests": [{"__typename": "User", "login": "reviewer"}]
+			},
+			{
+				"title": "PR without reviews",
+				"url": "https://github.com/org/repo/pull/2",
+				"mergeable": "MERGEABLE",
+				"files": [],
+				"reviewRequests": []
+			}
+		]`
+
+		client := NewClientWithExecutor(&mockExecutor{output: sampleJSON})
+		prs, err := client.GetMergeablePullRequests()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(prs) != 1 {
+			t.Fatalf("expected 1 mergeable PR, got %d", len(prs))
+		}
+
+		if prs[0].Title != "PR without reviews" {
+			t.Errorf("expected PR without reviews to be returned, got %q", prs[0].Title)
+		}
+	})
+
+	t.Run("filters out PRs that are not mergeable", func(t *testing.T) {
+		sampleJSON := `[
+			{
+				"title": "Conflicted PR",
+				"url": "https://github.com/org/repo/pull/1",
+				"mergeable": "CONFLICTING",
+				"files": [],
+				"reviewRequests": []
+			},
+			{
+				"title": "Mergeable PR",
+				"url": "https://github.com/org/repo/pull/2",
+				"mergeable": "MERGEABLE",
+				"files": [],
+				"reviewRequests": []
+			}
+		]`
+
+		client := NewClientWithExecutor(&mockExecutor{output: sampleJSON})
+		prs, err := client.GetMergeablePullRequests()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(prs) != 1 {
+			t.Fatalf("expected 1 mergeable PR, got %d", len(prs))
+		}
+
+		if prs[0].Title != "Mergeable PR" {
+			t.Errorf("expected mergeable PR to be returned, got %q", prs[0].Title)
+		}
+	})
+
+	t.Run("returns empty list when no PRs are mergeable", func(t *testing.T) {
+		sampleJSON := `[
+			{
+				"title": "PR 1",
+				"url": "https://github.com/org/repo/pull/1",
+				"mergeable": "MERGEABLE",
+				"files": [],
+				"reviewRequests": [{"__typename": "User", "login": "reviewer"}]
+			},
+			{
+				"title": "PR 2",
+				"url": "https://github.com/org/repo/pull/2",
+				"mergeable": "CONFLICTING",
+				"files": [],
+				"reviewRequests": []
+			}
+		]`
+
+		client := NewClientWithExecutor(&mockExecutor{output: sampleJSON})
+		prs, err := client.GetMergeablePullRequests()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(prs) != 0 {
+			t.Errorf("expected empty list, got %d PRs", len(prs))
+		}
+	})
+
+	t.Run("returns all PRs when all are mergeable and have no review requests", func(t *testing.T) {
+		sampleJSON := `[
+			{
+				"title": "PR 1",
+				"url": "https://github.com/org/repo/pull/1",
+				"mergeable": "MERGEABLE",
+				"files": [],
+				"reviewRequests": []
+			},
+			{
+				"title": "PR 2",
+				"url": "https://github.com/org/repo/pull/2",
+				"mergeable": "MERGEABLE",
+				"files": [],
+				"reviewRequests": []
+			}
+		]`
+
+		client := NewClientWithExecutor(&mockExecutor{output: sampleJSON})
+		prs, err := client.GetMergeablePullRequests()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(prs) != 2 {
+			t.Errorf("expected 2 mergeable PRs, got %d", len(prs))
+		}
+	})
+
+	t.Run("handles empty PR list from upstream", func(t *testing.T) {
+		client := NewClientWithExecutor(&mockExecutor{output: "[]"})
+		prs, err := client.GetMergeablePullRequests()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(prs) != 0 {
+			t.Errorf("expected empty list, got %d PRs", len(prs))
+		}
+	})
+}
+
+// TestGetPullRequestDetails tests the behavior of fetching PR details.
+func TestGetPullRequestDetails(t *testing.T) {
+	client := NewClientWithExecutor(&mockExecutor{})
+
+	t.Run("returns PR unchanged (placeholder implementation)", func(t *testing.T) {
+		pr := models.PullRequest{
+			Title: "Test PR",
+			URL:   "https://github.com/org/repo/pull/1",
+		}
+
+		result, err := client.GetPullRequestDetails(pr)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if result.Title != pr.Title {
+			t.Errorf("expected title %q, got %q", pr.Title, result.Title)
+		}
+		if result.URL != pr.URL {
+			t.Errorf("expected URL %q, got %q", pr.URL, result.URL)
+		}
+	})
+
+	t.Run("preserves all PR fields", func(t *testing.T) {
+		pr := models.PullRequest{
+			Title:       "Complex PR",
+			URL:         "https://github.com/org/repo/pull/123",
+			HeadRefName: "feature/test",
+			Mergeable:   "MERGEABLE",
+			Files: []models.File{
+				{Path: "test.go", Additions: 10, Deletions: 5},
+			},
+			ReviewRequests: []models.ReviewRequest{
+				{Type: "User", Login: "reviewer1"},
+			},
+		}
+
+		result, err := client.GetPullRequestDetails(pr)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(result.Files) != len(pr.Files) {
+			t.Errorf("expected %d files, got %d", len(pr.Files), len(result.Files))
+		}
+		if len(result.ReviewRequests) != len(pr.ReviewRequests) {
+			t.Errorf("expected %d review requests, got %d", len(pr.ReviewRequests), len(result.ReviewRequests))
+		}
+	})
+}
+
+// TestMergePullRequest tests the behavior of merging pull requests.
+func TestMergePullRequest(t *testing.T) {
+	t.Run("merges PR without deleting branch", func(t *testing.T) {
+		executor := &mockExecutor{captureArgs: true}
+		client := NewClientWithExecutor(executor)
+
+		err := client.MergePullRequest("https://github.com/org/repo/pull/123", false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if !executor.wasCalled {
+			t.Fatal("expected executor to be called")
+		}
+		if executor.lastCmd != "gh" {
+			t.Errorf("expected command 'gh', got %q", executor.lastCmd)
+		}
+
+		expectedArgs := []string{"pr", "merge", "https://github.com/org/repo/pull/123"}
+		if !sliceEqual(executor.lastArgs, expectedArgs) {
+			t.Errorf("expected args %v, got %v", expectedArgs, executor.lastArgs)
+		}
+	})
+
+	t.Run("merges PR with branch deletion", func(t *testing.T) {
+		executor := &mockExecutor{captureArgs: true}
+		client := NewClientWithExecutor(executor)
+
+		err := client.MergePullRequest("https://github.com/org/repo/pull/456", true)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if !executor.wasCalled {
+			t.Fatal("expected executor to be called")
+		}
+
+		expectedArgs := []string{"pr", "merge", "https://github.com/org/repo/pull/456", "--delete-branch"}
+		if !sliceEqual(executor.lastArgs, expectedArgs) {
+			t.Errorf("expected args %v, got %v", expectedArgs, executor.lastArgs)
+		}
+	})
+
+	t.Run("returns error when merge fails", func(t *testing.T) {
+		executor := &mockExecutor{shouldFail: true, output: "merge conflict detected"}
+		client := NewClientWithExecutor(executor)
+
+		err := client.MergePullRequest("https://github.com/org/repo/pull/789", false)
+		if err == nil {
+			t.Fatal("expected error when merge fails, got nil")
+		}
+
+		if !strings.Contains(err.Error(), "failed to merge PR") {
+			t.Errorf("expected error to mention merge failure, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "https://github.com/org/repo/pull/789") {
+			t.Errorf("expected error to include PR URL, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "merge conflict detected") {
+			t.Errorf("expected error to include command output, got: %v", err)
+		}
+	})
+
+	t.Run("handles different PR URL formats", func(t *testing.T) {
+		executor := &mockExecutor{captureArgs: true}
+		client := NewClientWithExecutor(executor)
+
+		urls := []string{
+			"https://github.com/org/repo/pull/1",
+			"https://github.com/different-org/different-repo/pull/999",
+			"1", // PR number only
+		}
+
+		for _, url := range urls {
+			executor.wasCalled = false
+			err := client.MergePullRequest(url, false)
+			if err != nil {
+				t.Errorf("unexpected error for URL %q: %v", url, err)
+			}
+			if !executor.wasCalled {
+				t.Errorf("expected executor to be called for URL %q", url)
+			}
+		}
+	})
+}
+
+// mockExecutor is a test helper that mocks command execution.
+type mockExecutor struct {
+	output      string
+	shouldFail  bool
+	captureArgs bool
+	wasCalled   bool
+	lastCmd     string
+	lastArgs    []string
+}
+
+func (m *mockExecutor) Execute(cmd string, args ...string) (string, error) {
+	if m.captureArgs {
+		m.wasCalled = true
+		m.lastCmd = cmd
+		m.lastArgs = args
+	}
+
+	if m.shouldFail {
+		return m.output, errors.New("command failed")
+	}
+	return m.output, nil
+}
+
+func (m *mockExecutor) ExecuteWithStdin(_ /* stdin */, cmd string, args ...string) (string, error) {
+	// For testing purposes, just delegate to Execute
+	return m.Execute(cmd, args...)
+}
+
+func jsonFieldsArg(t *testing.T, args []string) string {
+	t.Helper()
+	for i, arg := range args {
+		if arg == "--json" && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	t.Fatal("expected --json argument")
+	return ""
+}
+
+func mustParseTime(t *testing.T, value string) time.Time {
+	t.Helper()
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		t.Fatalf("parse time %q: %v", value, err)
+	}
+	return parsed
+}
+
+func TestGetPendingPullRequestsRetriesNonZeroExit(t *testing.T) {
+	exec := &separatedMock{calls: []ghCall{
+		{stdout: "[]", stderr: "gh: api error", err: errors.New("exit status 1")},
+		{stdout: "[]", stderr: "gh: api error", err: errors.New("exit status 1")},
+	}}
+	client := NewClientWithExecutor(exec)
+	prs, err := client.GetPendingPullRequests()
+	if err == nil {
+		t.Fatal("expected error after gh exits non-zero twice")
+	}
+	if prs != nil {
+		t.Fatalf("prs = %v, want nil", prs)
+	}
+	if exec.n != 2 {
+		t.Fatalf("gh calls = %d, want 2", exec.n)
+	}
+	if !strings.Contains(err.Error(), "gh: api error") {
+		t.Fatalf("error = %v, want gh stderr", err)
+	}
+}
+
+func TestGetPendingPullRequestsDoesNotRetryTruncatedJSON(t *testing.T) {
+	exec := &separatedMock{calls: []ghCall{
+		{stdout: `[{"url":`},
+	}}
+	client := NewClientWithExecutor(exec)
+	prs, err := client.GetPendingPullRequests()
+	if err == nil {
+		t.Fatal("expected error for truncated JSON")
+	}
+	if prs != nil {
+		t.Fatalf("prs = %v, want nil", prs)
+	}
+	if exec.n != 1 {
+		t.Fatalf("gh calls = %d, want 1", exec.n)
+	}
+	if !strings.Contains(err.Error(), "unexpected end of JSON input") {
+		t.Fatalf("error = %v, want unexpected end of JSON input", err)
+	}
+}
+
+func TestGetPendingPullRequestsRejectsNull(t *testing.T) {
+	exec := &separatedMock{calls: []ghCall{{stdout: "null"}}}
+	client := NewClientWithExecutor(exec)
+	prs, err := client.GetPendingPullRequests()
+	if err == nil {
+		t.Fatal("expected error for JSON null")
+	}
+	if prs != nil {
+		t.Fatalf("prs = %v, want nil", prs)
+	}
+	if exec.n != 1 {
+		t.Fatalf("gh calls = %d, want 1", exec.n)
+	}
+}
+
+func TestGetPendingPullRequestsUsesSecondAttempt(t *testing.T) {
+	exec := &separatedMock{calls: []ghCall{
+		{stderr: "gh: temporary", err: errors.New("exit status 1")},
+		{stdout: "[]"},
+	}}
+	client := NewClientWithExecutor(exec)
+	prs, err := client.GetPendingPullRequests()
+	if err != nil {
+		t.Fatalf("GetPendingPullRequests() error = %v", err)
+	}
+	if len(prs) != 0 {
+		t.Fatalf("len(prs) = %d, want 0", len(prs))
+	}
+	if exec.n != 2 {
+		t.Fatalf("gh calls = %d, want 2", exec.n)
+	}
+}
+
+func TestGetPendingPullRequestsDoesNotParseStderr(t *testing.T) {
+	exec := &scriptedExec{results: []*cmdexec.ExecutionResult{{
+		Output:   "[]",
+		Stderr:   "warning: not a pull request list",
+		ExitCode: 0,
+	}}}
+	client := NewClient(context.Background(), exec)
+	prs, err := client.GetPendingPullRequests()
+	if err != nil {
+		t.Fatalf("GetPendingPullRequests() error = %v", err)
+	}
+	if len(prs) != 0 {
+		t.Fatalf("len(prs) = %d, want 0", len(prs))
+	}
+	if exec.n != 1 {
+		t.Fatalf("gh calls = %d, want 1", exec.n)
+	}
+}
+
+func TestGetPendingPullRequestsSeparatedNonZeroDoesNotUseStdout(t *testing.T) {
+	exec := &scriptedExec{results: []*cmdexec.ExecutionResult{
+		{Output: "[]", Stderr: "gh: boom", ExitCode: 1},
+		{Output: "[]", Stderr: "gh: boom", ExitCode: 1},
+	}}
+	client := NewClient(context.Background(), exec)
+	prs, err := client.GetPendingPullRequests()
+	if err == nil {
+		t.Fatal("expected error when gh exits non-zero")
+	}
+	if prs != nil {
+		t.Fatalf("prs = %v, want nil", prs)
+	}
+	if exec.n != 2 {
+		t.Fatalf("gh calls = %d, want 2", exec.n)
+	}
+	if !strings.Contains(err.Error(), "gh: boom") {
+		t.Fatalf("error = %v, want gh stderr", err)
+	}
+}
+
+type ghCall struct {
+	stdout string
+	stderr string
+	err    error
+}
+
+type separatedMock struct {
+	calls []ghCall
+	n     int
+}
+
+func (m *separatedMock) Execute(cmd string, args ...string) (string, error) {
+	stdout, stderr, err := m.ExecuteSeparated(cmd, args...)
+	combined := stdout
+	if stderr != "" {
+		if combined != "" {
+			combined += "\n"
+		}
+		combined += stderr
+	}
+	return combined, err
+}
+
+func (m *separatedMock) ExecuteWithStdin(_ string, cmd string, args ...string) (string, error) {
+	return m.Execute(cmd, args...)
+}
+
+func (m *separatedMock) ExecuteSeparated(string, ...string) (string, string, error) {
+	if m.n >= len(m.calls) {
+		return "", "", errors.New("unexpected gh call")
+	}
+	call := m.calls[m.n]
+	m.n++
+	return call.stdout, call.stderr, call.err
+}
+
+type scriptedExec struct {
+	results []*cmdexec.ExecutionResult
+	n       int
+}
+
+func (s *scriptedExec) Execute(_ context.Context, _ cmdexec.ToolConfig) (*cmdexec.ExecutionResult, error) {
+	if s.n >= len(s.results) {
+		return nil, errors.New("unexpected gh call")
+	}
+	result := s.results[s.n]
+	s.n++
+	return result, nil
+}
+
+func (s *scriptedExec) IsAvailable(string) bool { return true }
+
+func TestGetAuthoredPullRequestsIncludesDrafts(t *testing.T) {
+	sampleJSON := `[
+		{"title": "Draft PR", "url": "https://github.com/org/repo/pull/1", "isDraft": true},
+		{"title": "Ready PR", "url": "https://github.com/org/repo/pull/2", "isDraft": false}
+	]`
+	client := NewClientWithExecutor(&mockExecutor{output: sampleJSON})
+	prs, err := client.GetAuthoredPullRequests()
+	if err != nil {
+		t.Fatalf("GetAuthoredPullRequests() error = %v", err)
+	}
+	if len(prs) != 2 || !prs[0].IsDraft || prs[1].IsDraft {
+		t.Fatalf("prs = %+v", prs)
+	}
+}
+
+func TestMergeableStateIgnoresStderr(t *testing.T) {
+	exec := &separatedMock{calls: []ghCall{{
+		stdout: `{"mergeable":"MERGEABLE"}`,
+		stderr: "warning: not json",
+	}}}
+	client := NewClientWithExecutor(exec)
+	got, err := client.MergeableState("https://github.com/acme/widgets/pull/1")
+	if err != nil {
+		t.Fatalf("MergeableState() error = %v", err)
+	}
+	if got != "MERGEABLE" {
+		t.Fatalf("MergeableState() = %q", got)
+	}
+	if exec.n != 1 {
+		t.Fatalf("gh calls = %d, want 1", exec.n)
+	}
+}
+
+// Helper function to compare slices.
+func sliceEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// argsExec records every gh argument list and answers by subcommand.
+type argsExec struct {
+	calls [][]string
+	list  string
+	views map[string]string
+}
+
+func (a *argsExec) Execute(cmd string, args ...string) (string, error) {
+	stdout, _, err := a.ExecuteSeparated(cmd, args...)
+	return stdout, err
+}
+
+func (a *argsExec) ExecuteWithStdin(_ string, cmd string, args ...string) (string, error) {
+	return a.Execute(cmd, args...)
+}
+
+func (a *argsExec) ExecuteSeparated(_ string, args ...string) (string, string, error) {
+	a.calls = append(a.calls, append([]string(nil), args...))
+	if len(args) >= 2 && args[0] == "pr" && args[1] == "list" {
+		return a.list, "", nil
+	}
+	if len(args) >= 5 && args[0] == "pr" && args[1] == "view" {
+		if out, ok := a.views[args[2]+" "+args[4]]; ok {
+			return out, "", nil
+		}
+	}
+	return "", "", errors.New("unexpected gh call: " + strings.Join(args, " "))
+}
+
+func TestPullRequestListsOmitFilesAndChecks(t *testing.T) {
+	mergeFields := []string{"url", "title", "isDraft", "labels", "mergeable", "headRefName", "reviewRequests"}
+	tests := []struct {
+		name  string
+		fetch func(*Client) ([]models.PullRequest, error)
+		want  []string
+	}{
+		{"pending", (*Client).GetPendingPullRequests, []string{"url", "title", "isDraft", "labels", "reviewRequests", "latestReviews"}},
+		{"authored", (*Client).GetAuthoredPullRequests, mergeFields},
+		{"mergeable", (*Client).GetMergeablePullRequests, mergeFields},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			exec := &argsExec{list: "[]"}
+			if _, err := tc.fetch(NewClientWithExecutor(exec)); err != nil {
+				t.Fatalf("fetch error = %v", err)
+			}
+			if len(exec.calls) != 1 {
+				t.Fatalf("gh calls = %d, want 1", len(exec.calls))
+			}
+			got := strings.Split(jsonFieldsArg(t, exec.calls[0]), ",")
+			if !sliceEqual(got, tc.want) {
+				t.Fatalf("--json fields = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestStatusChecksFetchedOncePerPullRequest(t *testing.T) {
+	const url = "https://github.com/acme/widgets/pull/1"
+	exec := &argsExec{views: map[string]string{
+		url + " statusCheckRollup": `{"statusCheckRollup":[{"name":"ci","status":"COMPLETED","conclusion":"SUCCESS"}]}`,
+	}}
+	client := NewClientWithExecutor(exec)
+	for range 2 {
+		checks, err := client.StatusChecks(url)
+		if err != nil {
+			t.Fatalf("StatusChecks() error = %v", err)
+		}
+		if len(checks) != 1 || checks[0].Name != "ci" || checks[0].Conclusion != "SUCCESS" {
+			t.Fatalf("checks = %+v", checks)
+		}
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("gh calls = %d, want 1: %v", len(exec.calls), exec.calls)
+	}
+	want := []string{"pr", "view", url, "--json", "statusCheckRollup"}
+	if !sliceEqual(exec.calls[0], want) {
+		t.Fatalf("args = %v, want %v", exec.calls[0], want)
+	}
+}
+
+func TestPullRequestFilesFetchedOncePerPullRequest(t *testing.T) {
+	const url = "https://github.com/acme/widgets/pull/2"
+	exec := &argsExec{views: map[string]string{
+		url + " files": `{"files":[{"path":"docs/a.md","additions":1,"deletions":0}]}`,
+	}}
+	client := NewClientWithExecutor(exec)
+	for range 2 {
+		files, err := client.PullRequestFiles(url)
+		if err != nil {
+			t.Fatalf("PullRequestFiles() error = %v", err)
+		}
+		if len(files) != 1 || files[0].Path != "docs/a.md" {
+			t.Fatalf("files = %+v", files)
+		}
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("gh calls = %d, want 1: %v", len(exec.calls), exec.calls)
+	}
+	want := []string{"pr", "view", url, "--json", "files"}
+	if !sliceEqual(exec.calls[0], want) {
+		t.Fatalf("args = %v, want %v", exec.calls[0], want)
+	}
+}
+
+func TestStatusChecksErrorIsNotCached(t *testing.T) {
+	const url = "https://github.com/acme/widgets/pull/3"
+	exec := &argsExec{views: map[string]string{}}
+	client := NewClientWithExecutor(exec)
+	if _, err := client.StatusChecks(url); err == nil {
+		t.Fatal("expected error")
+	}
+	exec.views[url+" statusCheckRollup"] = `{"statusCheckRollup":[]}`
+	if _, err := client.StatusChecks(url); err != nil {
+		t.Fatalf("second StatusChecks() error = %v", err)
+	}
+	if len(exec.calls) != 2 {
+		t.Fatalf("gh calls = %d, want 2", len(exec.calls))
+	}
+}

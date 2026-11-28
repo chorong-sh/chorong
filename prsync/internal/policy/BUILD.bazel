@@ -1,0 +1,48 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "go_default_library",
+    srcs = [
+        "classify.go",
+        "engine.go",
+        "types.go",
+    ],
+    importpath = "github.com/chorong-sh/chorong/prsync/internal/policy",
+    visibility = ["//prsync:__subpackages__"],
+    deps = [
+        "//prsync/internal/backend:go_default_library",
+        "//prsync/internal/config:go_default_library",
+        "//prsync/internal/dispatch:go_default_library",
+        "//prsync/internal/gh:go_default_library",
+        "//prsync/internal/lease:go_default_library",
+        "//prsync/internal/ledger:go_default_library",
+        "//prsync/internal/scan:go_default_library",
+        "@com_github_jaeyeom_go_cmdexec//:go_default_library",
+    ],
+)
+
+go_test(
+    name = "go_default_test",
+    srcs = [
+        "bot_rereview_test.go",
+        "policy_test.go",
+    ],
+    embed = [":go_default_library"],
+    deps = [
+        "//prsync/internal/backend:go_default_library",
+        "//prsync/internal/config:go_default_library",
+        "//prsync/internal/gh:go_default_library",
+        "//prsync/internal/lease:go_default_library",
+        "//prsync/internal/ledger:go_default_library",
+        "//prsync/internal/scan:go_default_library",
+    ],
+)
+
+filegroup(
+    name = "go_srcs",
+    srcs = glob(
+        ["**/*.go"],
+        exclude = ["**/*_test.go"],
+    ),
+    visibility = ["//tools/lint:__pkg__"],
+)

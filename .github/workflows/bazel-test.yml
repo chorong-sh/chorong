@@ -1,0 +1,72 @@
+name: Bazel Tests
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: Bazel Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # //tools/lint:gitleaks_test scans the full git history.
+          fetch-depth: 0
+
+      - name: Set up Bazel
+        uses: bazelbuild/setup-bazelisk@b39c379c82683a5f25d34f0d062761f62693e0b2 # v3.0.0
+
+      - name: Mount Bazel repository cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/bazel-repo
+          key: ${{ runner.os }}-bazel-repo-${{ hashFiles('.bazelrc', '.bazeliskrc', 'MODULE.bazel', 'MODULE.bazel.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bazel-repo-
+
+      - name: Configure Bazel
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          mkdir -p "$HOME/.cache/bazel-repo"
+          rm -f .bazelrc.user
+          umask 077
+          {
+            printf 'build --repository_cache=%s/.cache/bazel-repo\n' "$HOME"
+            if [ -n "${BUILDBUDDY_API_KEY:-}" ]; then
+              printf 'build:buildbuddy --remote_header=x-buildbuddy-api-key=%s\n' "$BUILDBUDDY_API_KEY"
+              printf 'build:buildbuddy --bes_header=x-buildbuddy-api-key=%s\n' "$BUILDBUDDY_API_KEY"
+              printf 'build --config=rbe\n'
+            fi
+          } > .bazelrc.user
+
+      - name: Run Bazel tests
+        run: bazel test //...
+
+  go-build:
+    name: Plain Go Build (No Bazel)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: "1.26.10"
+          cache: true
+
+      - name: Build all binaries with plain Go
+        run: make install

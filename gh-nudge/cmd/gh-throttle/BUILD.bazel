@@ -1,0 +1,54 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_library(
+    name = "go_default_library",
+    srcs = [
+        "main.go",
+        "skill.go",
+        "toolcli.go",
+    ],
+    embedsrcs = ["skill.md"],
+    importpath = "github.com/chorong-sh/chorong/gh-nudge/cmd/gh-throttle",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//pkg/ghlimit:go_default_library",
+        "//pkg/procinfo:go_default_library",
+        "//pkg/toolcli:go_default_library",
+    ],
+)
+
+go_binary(
+    name = "gh-throttle",
+    embed = [":go_default_library"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "go_default_test",
+    srcs = [
+        "main_test.go",
+        "toolcli_test.go",
+    ],
+    embed = [":go_default_library"],
+    deps = [
+        "//pkg/procinfo:go_default_library",
+        "//pkg/toolcli:go_default_library",
+    ],
+)
+
+exports_files(
+    ["main.go"],
+    visibility = [
+        "//:__pkg__",
+        "//gh-nudge/cmd:__pkg__",
+    ],
+)
+
+filegroup(
+    name = "go_srcs",
+    srcs = glob(
+        ["**/*.go"],
+        exclude = ["**/*_test.go"],
+    ),
+    visibility = ["//tools/lint:__pkg__"],
+)

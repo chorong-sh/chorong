@@ -1,0 +1,68 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "go_default_library",
+    srcs = [
+        "agent.go",
+        "claim.go",
+        "herdr.go",
+        "launch.go",
+        "lease.go",
+        "outcome.go",
+        "plan.go",
+        "ready.go",
+        "safety.go",
+        "start.go",
+        "tab.go",
+        "trust.go",
+        "worktree.go",
+    ],
+    importpath = "github.com/chorong-sh/chorong/factory/internal/start",
+    visibility = ["//factory:__subpackages__"],
+    deps = [
+        "//factory/internal/agentbus:go_default_library",
+        "//factory/internal/config:go_default_library",
+        "//factory/internal/gate:go_default_library",
+        "//factory/internal/herdr:go_default_library",
+        "//factory/internal/ready:go_default_library",
+        "//factory/internal/source:go_default_library",
+        "//factory/internal/store:go_default_library",
+    ],
+)
+
+go_test(
+    name = "go_default_test",
+    srcs = [
+        "claim_safety_test.go",
+        "duplicate_test.go",
+        "github_status_test.go",
+        "lease_test.go",
+        "ready_test.go",
+        "reportback_test.go",
+        "start_prompt_append_test.go",
+        "start_test.go",
+        "trust_test.go",
+        "wake_test.go",
+        "worker_test.go",
+    ],
+    embed = [":go_default_library"],
+    deps = [
+        "//factory/internal/agentbus:go_default_library",
+        "//factory/internal/config:go_default_library",
+        "//factory/internal/gate:go_default_library",
+        "//factory/internal/herdr:go_default_library",
+        "//factory/internal/ready:go_default_library",
+        "//factory/internal/source:go_default_library",
+        "//factory/internal/source/fake:go_default_library",
+        "//factory/internal/store:go_default_library",
+    ],
+)
+
+filegroup(
+    name = "go_srcs",
+    srcs = glob(
+        ["**/*.go"],
+        exclude = ["**/*_test.go"],
+    ),
+    visibility = ["//tools/lint:__pkg__"],
+)

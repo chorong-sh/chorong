@@ -1,0 +1,32 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "go_default_library",
+    srcs = [
+        "adopt.go",
+        "checkout.go",
+        "procs.go",
+    ],
+    importpath = "github.com/chorong-sh/chorong/agentbus/internal/checkout",
+    visibility = ["//agentbus:__subpackages__"],
+)
+
+go_test(
+    name = "go_default_test",
+    srcs = [
+        "adopt_test.go",
+        "checkout_test.go",
+        "procs_test.go",
+        "release_test.go",
+    ],
+    embed = [":go_default_library"],
+)
+
+filegroup(
+    name = "go_srcs",
+    srcs = glob(
+        ["**/*.go"],
+        exclude = ["**/*_test.go"],
+    ),
+    visibility = ["//tools/lint:__pkg__"],
+)

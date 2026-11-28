@@ -1,0 +1,5 @@
+# ShellCheck configuration file
+# https://www.shellcheck.net/wiki/
+
+# Use bash as the default shell
+shell=bash

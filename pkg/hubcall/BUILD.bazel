@@ -1,0 +1,34 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "go_default_library",
+    srcs = [
+        "caller.go",
+        "hubcall.go",
+    ],
+    importpath = "github.com/chorong-sh/chorong/pkg/hubcall",
+    visibility = ["//visibility:public"],
+    deps = ["//pkg/remotecall:go_default_library"],
+)
+
+go_test(
+    name = "go_default_test",
+    srcs = [
+        "caller_test.go",
+        "hubcall_test.go",
+    ],
+    embed = [":go_default_library"],
+    deps = [
+        "//pkg/hubcall/sshtest:go_default_library",
+        "//pkg/remotecall:go_default_library",
+    ],
+)
+
+filegroup(
+    name = "go_srcs",
+    srcs = glob(
+        ["**/*.go"],
+        exclude = ["**/*_test.go"],
+    ),
+    visibility = ["//tools/lint:__pkg__"],
+)

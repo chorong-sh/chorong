@@ -1,0 +1,51 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "go_default_library",
+    srcs = [
+        "hibernate.go",
+        "idle.go",
+        "policy.go",
+        "record.go",
+        "wake.go",
+    ],
+    importpath = "github.com/chorong-sh/chorong/agentbus/internal/hibernate",
+    visibility = ["//agentbus:__subpackages__"],
+    deps = [
+        "//agentbus/internal/adapter:go_default_library",
+        "//agentbus/internal/adapter/herdr:go_default_library",
+        "//agentbus/internal/dialog:go_default_library",
+        "//agentbus/internal/eventlog:go_default_library",
+        "//agentbus/internal/lease:go_default_library",
+        "//agentbus/internal/memreport:go_default_library",
+        "//pkg/hubcall:go_default_library",
+        "//pkg/procinfo:go_default_library",
+    ],
+)
+
+go_test(
+    name = "go_default_test",
+    srcs = [
+        "hibernate_test.go",
+        "idle_test.go",
+        "policy_test.go",
+        "wake_test.go",
+    ],
+    embed = [":go_default_library"],
+    deps = [
+        "//agentbus/internal/adapter:go_default_library",
+        "//agentbus/internal/adapter/herdr:go_default_library",
+        "//agentbus/internal/eventlog:go_default_library",
+        "//agentbus/internal/lease:go_default_library",
+        "//pkg/procinfo:go_default_library",
+    ],
+)
+
+filegroup(
+    name = "go_srcs",
+    srcs = glob(
+        ["**/*.go"],
+        exclude = ["**/*_test.go"],
+    ),
+    visibility = ["//tools/lint:__pkg__"],
+)

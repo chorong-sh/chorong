@@ -1,0 +1,53 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "go_default_library",
+    srcs = [
+        "approve.go",
+        "config.go",
+    ],
+    importpath = "github.com/chorong-sh/chorong/gh-nudge/internal/config",
+    visibility = ["//gh-nudge:__subpackages__"],
+    deps = [
+        "//gh-nudge/internal/config/pkl:go_default_library",
+        "//gh-nudge/internal/slack:go_default_library",
+        "//pkg/genfiles:go_default_library",
+        "@com_github_apple_pkl_go//pkl:go_default_library",
+        "@com_github_bmatcuk_doublestar_v4//:go_default_library",
+        "@in_gopkg_yaml_v3//:go_default_library",
+    ],
+)
+
+go_test(
+    name = "go_default_test",
+    srcs = [
+        "approve_test.go",
+        "config_test.go",
+    ],
+    data = [
+        "//gh-nudge/pkl:config_pkl",
+        "//gh-nudge/pkl:example.config.pkl",
+        "@pkl_project//:packages",
+    ] + select({
+        "@bazel_tools//src/conditions:darwin_arm64": ["@pkl-cli-macos-aarch64//file:downloaded"],
+        "@bazel_tools//src/conditions:darwin_arm64e": ["@pkl-cli-macos-aarch64//file:downloaded"],
+        "@bazel_tools//src/conditions:darwin_x86_64": ["@pkl-cli-macos-amd64//file:downloaded"],
+        "@bazel_tools//src/conditions:linux_aarch64": ["@pkl-cli-linux-aarch64//file:downloaded"],
+        "@bazel_tools//src/conditions:linux_x86_64": ["@pkl-cli-linux-amd64//file:downloaded"],
+        "//conditions:default": [],
+    }),
+    embed = [":go_default_library"],
+    deps = [
+        "//gh-nudge/internal/config/pkl:go_default_library",
+        "@com_github_apple_pkl_go//pkl:go_default_library",
+    ],
+)
+
+filegroup(
+    name = "go_srcs",
+    srcs = glob(
+        ["**/*.go"],
+        exclude = ["**/*_test.go"],
+    ),
+    visibility = ["//tools/lint:__pkg__"],
+)

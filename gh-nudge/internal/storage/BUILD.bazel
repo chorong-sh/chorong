@@ -1,0 +1,47 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "go_default_library",
+    srcs = [
+        "cli.go",
+        "github.go",
+        "github_unified.go",
+        "interfaces.go",
+        "lister.go",
+        "lock.go",
+        "locker.go",
+        "store.go",
+        "utilities.go",
+    ],
+    importpath = "github.com/chorong-sh/chorong/gh-nudge/internal/storage",
+    visibility = ["//gh-nudge:__subpackages__"],
+    deps = [
+        "//gh-nudge/internal/models:go_default_library",
+        "@com_github_google_renameio_v2//:go_default_library",
+        "@org_golang_x_sys//unix:go_default_library",
+    ],
+)
+
+go_test(
+    name = "go_default_test",
+    srcs = [
+        "cli_test.go",
+        "github_test.go",
+        "lister_test.go",
+        "lock_test.go",
+        "locker_test.go",
+        "store_test.go",
+        "utilities_test.go",
+    ],
+    embed = [":go_default_library"],
+    deps = ["//gh-nudge/internal/models:go_default_library"],
+)
+
+filegroup(
+    name = "go_srcs",
+    srcs = glob(
+        ["**/*.go"],
+        exclude = ["**/*_test.go"],
+    ),
+    visibility = ["//tools/lint:__pkg__"],
+)

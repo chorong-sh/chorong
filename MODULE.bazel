@@ -1,0 +1,111 @@
+module(
+    name = "chorong",
+    version = "0.1.0",
+)
+
+# Go
+bazel_dep(name = "rules_go", version = "0.65.0")
+bazel_dep(name = "bazel_skylib", version = "1.9.2")
+bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "rules_shell", version = "0.10.0")
+
+# Staticcheck analyzers for nogo (bzlmod-compatible)
+bazel_dep(name = "nogo_analyzer_bzlmod", version = "0.1.0")
+
+# Configure Go version to match go.mod toolchain requirement.
+go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
+go_sdk.download(
+    name = "go_sdk",
+    version = "1.26.10",
+)
+go_sdk.nogo(nogo = "//tools/lint:platform_nogo")
+use_repo(go_sdk, "go_sdk")
+
+bazel_dep(name = "gazelle", version = "0.54.0")
+
+go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
+go_deps.from_file(go_mod = "//:go.mod")
+use_repo(
+    go_deps,
+    "com_github_apple_pkl_go",
+    "com_github_bmatcuk_doublestar_v4",
+    "com_github_charmbracelet_bubbles",
+    "com_github_charmbracelet_bubbletea",
+    "com_github_charmbracelet_lipgloss",
+    "com_github_creack_pty",
+    "com_github_fsnotify_fsnotify",
+    "com_github_google_renameio_v2",
+    "com_github_gordonklaus_ineffassign",
+    "com_github_jaeyeom_go_cmdexec",
+    "com_github_jaeyeom_godernize",
+    "com_github_muesli_termenv",
+    "com_github_pelletier_go_toml_v2",
+    "com_github_securego_gosec_v2",
+    "com_github_slack_go_slack",
+    "com_github_spf13_cobra",
+    "com_github_uudashr_iface",
+    "com_github_yuin_goldmark",
+    "in_gopkg_yaml_v3",
+    "org_golang_x_image",
+    "org_golang_x_sys",
+    "org_golang_x_tools",
+    "org_modernc_sqlite",
+)
+
+# Aspect rules for linting and formatting
+bazel_dep(name = "aspect_rules_lint", version = "2.9.1")
+
+# Buildifier for Bazel file formatting
+bazel_dep(name = "buildifier_prebuilt", version = "10.2.0")
+
+# Pinned gitleaks binaries for git history secret scanning.
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+_GITLEAKS_VERSION = "8.30.1"
+
+_GITLEAKS_BUILD_FILE = 'exports_files(["gitleaks"])\n'
+
+http_archive(
+    name = "gitleaks_linux_aarch64",
+    build_file_content = _GITLEAKS_BUILD_FILE,
+    sha256 = "e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080",
+    urls = ["https://github.com/gitleaks/gitleaks/releases/download/v{v}/gitleaks_{v}_linux_arm64.tar.gz".format(v = _GITLEAKS_VERSION)],
+)
+
+http_archive(
+    name = "gitleaks_linux_x86_64",
+    build_file_content = _GITLEAKS_BUILD_FILE,
+    sha256 = "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb",
+    urls = ["https://github.com/gitleaks/gitleaks/releases/download/v{v}/gitleaks_{v}_linux_x64.tar.gz".format(v = _GITLEAKS_VERSION)],
+)
+
+http_archive(
+    name = "gitleaks_osx_aarch64",
+    build_file_content = _GITLEAKS_BUILD_FILE,
+    sha256 = "b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5",
+    urls = ["https://github.com/gitleaks/gitleaks/releases/download/v{v}/gitleaks_{v}_darwin_arm64.tar.gz".format(v = _GITLEAKS_VERSION)],
+)
+
+http_archive(
+    name = "gitleaks_osx_x86_64",
+    build_file_content = _GITLEAKS_BUILD_FILE,
+    sha256 = "dfe101a4db2255fc85120ac7f3d25e4342c3c20cf749f2c20a18081af1952709",
+    urls = ["https://github.com/gitleaks/gitleaks/releases/download/v{v}/gitleaks_{v}_darwin_x64.tar.gz".format(v = _GITLEAKS_VERSION)],
+)
+
+# Pkl for configuration (gh-nudge & orgctl)
+bazel_dep(name = "rules_pkl", version = "0.18.0")
+
+pkl = use_extension("@rules_pkl//pkl/extensions:pkl.bzl", "pkl")
+pkl.project(
+    name = "pkl_project",
+    pkl_project = "//:PklProject",
+    pkl_project_deps = "//:PklProject.deps.json",
+)
+use_repo(pkl, "pkl-cli-linux-aarch64", "pkl-cli-linux-amd64", "pkl-cli-macos-aarch64", "pkl-cli-macos-amd64", "pkl-doc-cli-linux-aarch64", "pkl-doc-cli-linux-amd64", "pkl-doc-cli-macos-aarch64", "pkl-doc-cli-macos-amd64", "pkl_project")
+
+# BuildBuddy RBE toolchain
+bazel_dep(name = "toolchains_buildbuddy", version = "0.0.4")
+
+buildbuddy = use_extension("@toolchains_buildbuddy//:extensions.bzl", "buildbuddy")
+use_repo(buildbuddy, "buildbuddy_toolchain")

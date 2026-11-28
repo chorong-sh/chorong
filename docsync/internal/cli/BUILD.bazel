@@ -1,0 +1,56 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "go_default_library",
+    srcs = [
+        "check.go",
+        "exit.go",
+        "root.go",
+        "skill.go",
+        "toolcli.go",
+        "validate.go",
+    ],
+    embedsrcs = ["skill.md"],
+    importpath = "github.com/chorong-sh/chorong/docsync/internal/cli",
+    visibility = ["//docsync:__subpackages__"],
+    deps = [
+        "//docsync/internal/gitchanges:go_default_library",
+        "//docsync/internal/mapping:go_default_library",
+        "//docsync/internal/matcher:go_default_library",
+        "//pkg/toolcli:go_default_library",
+        "@com_github_jaeyeom_go_cmdexec//:go_default_library",
+        "@com_github_spf13_cobra//:go_default_library",
+    ],
+)
+
+go_test(
+    name = "go_default_test",
+    srcs = [
+        "check_test.go",
+        "cli_test.go",
+        "toolcli_test.go",
+        "validate_test.go",
+    ],
+    data = glob(["testdata/**"]),
+    embed = [":go_default_library"],
+    deps = [
+        "//docsync/internal/matcher:go_default_library",
+        "//pkg/toolcli:go_default_library",
+        "@com_github_jaeyeom_go_cmdexec//:go_default_library",
+    ],
+)
+
+filegroup(
+    name = "sh_srcs",
+    srcs = glob(["**/*.sh"]),
+    visibility = ["//tools/lint:__pkg__"],
+)
+
+filegroup(
+    name = "go_srcs",
+    srcs = glob(
+        ["**/*.go"],
+        exclude = ["**/*_test.go"],
+    ),
+    visibility = ["//tools/lint:__pkg__"],
+)

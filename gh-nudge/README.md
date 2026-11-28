@@ -1,0 +1,192 @@
+# GitHub Nudge Utilities
+
+gh-nudge is a set of small command-line tools on `gh` for a developer or
+small team that reviews many PRs. Each tool works alone. `gh-nudge` sends
+Slack reminders for stalled reviews. `gh-slack` messages a GitHub user on
+Slack. `gh-approve` approves or hands off PRs that match rules. `gh-merge`
+merges when checks pass. `gh-pr-review` drafts line comments, then posts
+one review. `gh-throttle` rate-limits `gh`. `gh-codeowners` names file
+owners. `gh-storage` manages the local store.
+
+## Tools at a glance
+| Command         | What it does                                                      | Needs Slack? | Docs                                      |
+|-----------------|-------------------------------------------------------------------|--------------|-------------------------------------------|
+| `gh-nudge`      | Slack reminders when a review stalls                              | yes          | [nudge.md](nudge.md)             |
+| `gh-slack`      | Send a Slack message to a GitHub user                             | yes          | [slack.md](slack.md)             |
+| `gh-approve`    | Approve or hand off PRs that match your rules; dry run by default | no           | [gh-approve.md](gh-approve.md)   |
+| `gh-merge`      | Merge a PR once checks pass and nobody is still requested         | no           | [merge.md](merge.md)             |
+| `gh-codeowners` | Name the owners of a list of files                                | no           | [codeowners.md](codeowners.md)   |
+| `gh-throttle`   | Share one GitHub rate-limit queue across every gh call            | no           | [gh-throttle.md](gh-throttle.md) |
+| `gh-storage`    | Back up and inspect the local review store                        | no           | [storage.md](storage.md)         |
+
+`gh-approve` uses search-result labels and size counts to skip rules that
+cannot match before loading full pull request metadata. Team-requested rules
+with `labels_required` also add label qualifiers to the GitHub search; differing
+label sets use separate searches. For `mine_comments_only`, a pull request
+over the rule's `max_files` or `max_changed_lines` limit reports ~too large to
+check (<files> files, <lines> changed lines)~ without fetching patches. Use
+`gh-approve --max-duration 5m` or `approve.max_duration = 5.min` to stop a pass
+from starting new pull requests after a time limit. Per-commit PR facts
+(files, patches, CODEOWNERS ownership) are cached by `owner/repo`, PR number,
+head SHA, and schema version under `$XDG_CACHE_HOME/gh-approve/facts/`
+(default `~/.cache/gh-approve/facts/`) and invalidated on head SHA, CODEOWNERS
+blob SHA, viewer team list, or schema changes (`--no-cache` bypasses it).
+Uncached PRs are loaded with a bounded worker pool (`approve.load_concurrency`
+/ `--load-concurrency`, default 4). `viewed.remark_dismissed` now defaults to
+`true` so plain `viewed` rules re-mark `DISMISSED` files after new pushes (set
+`viewed.remark_dismissed = false` to restore the previous behavior). See
+[gh-approve.md](gh-approve.md) for details.
+
+## Install
+
+Requires `gh auth login`. From a checkout of this repository, `make install`
+installs every command below (`INSTALL_CMDS` in the root Makefile). From the
+module proxy:
+
+```sh
+for cmd in gh-nudge gh-slack gh-approve gh-merge gh-codeowners gh-throttle gh-storage; do
+  go install "github.com/chorong-sh/chorong/gh-nudge/cmd/${cmd}@latest"
+done
+```
+
+## Quick start
+
+`gh-nudge` reads `~/.config/gh-nudge/config.pkl` when that file exists, and
+`config.yaml` otherwise. `--config` overrides the path. `--dry-run` builds
+the Slack message and does not send it. `--verbose` turns on debug logs.
+
+The next block is a complete file. `amends "Config.pkl"` is a path relative
+to that file, so it loads when the file sits beside
+`devtools/gh-nudge/pkl/Config.pkl` in a checkout. For
+`~/.config/gh-nudge/config.pkl`, point `amends` at that schema by its
+absolute path. The `package://` URI is not published. `github.repos` is
+read by `gh-nudge` and `gh-merge`. `slack.token` and
+`slack.default_channel` are read by `gh-nudge` and `gh-slack`.
+`settings.message_template` is read by `gh-nudge`. Placeholders are
+`{slack_id}`, `{title}`, `{hours}`, and `{url}`. Merge-only keys
+(`block_merge_labels`, `required_checks`, `flake_signatures`,
+`rca_marker`, `max_requeues`, `repo_settings`) are documented in
+[merge.md](merge.md). `rerequest.exclude_reviewers` is read by
+`gh-pr-review rerequest` (optional; documented in
+[cmd/gh-pr-review/README.md](cmd/gh-pr-review/README.md)). Every other key is in
+[Config.pkl](pkl/Config.pkl) and
+[example.config.pkl](pkl/example.config.pkl).
+
+```pkl
+amends "Config.pkl"
+
+github {
+  repos { "your-repo" } // gh-nudge and gh-merge
+}
+
+slack {
+  token = read("env:SLACK_TOKEN") // gh-nudge and gh-slack
+  default_channel = "#code-reviews" // gh-nudge and gh-slack
+}
+
+settings {
+  // gh-nudge. Placeholders: {slack_id}, {title}, {hours}, {url}.
+  message_template = "Hey <@{slack_id}>, the PR '{title}' has been waiting for your review for {hours} hours. {url}"
+}
+```
+
+```sh
+export SLACK_TOKEN=xoxb-your-token
+pkl eval config.pkl
+gh-nudge --config config.pkl --dry-run
+```
+
+Run those from the directory that holds the file and `Config.pkl`. The
+history file is that directory plus `notifications.json`. With the home
+file `~/.config/gh-nudge/config.pkl`, the history file is
+`~/.config/gh-nudge/notifications.json`.
+
+Shape of the log when no reviewer is due. Not a live capture. Nothing is sent.
+
+```text
+time=2026-11-14T22:13:20.000Z level=INFO msg="Using notification history file" path=devtools/gh-nudge/pkl/notifications.json
+time=2026-11-14T22:13:20.000Z level=INFO msg="Fetching pending pull requests..."
+time=2026-11-14T22:13:21.000Z level=INFO msg="Found pull requests" count=0
+time=2026-11-14T22:13:21.000Z level=INFO msg="Finished processing pull requests"
+```
+
+When a reviewer is due and has a Slack user ID, dry run adds these two lines
+and still sends nothing. `destination` is `slack.default_channel` when
+`dm_by_default` is left false.
+
+```text
+time=2026-11-14T22:13:21.000Z level=INFO msg="DRY RUN: Would send message" channel="#code-reviews"
+time=2026-11-14T22:13:21.000Z level=INFO msg="Dry run mode, not sending notification" pr="Fix the parser" reviewer=ada destination="#code-reviews" message="Hey <@U012>, the PR 'Fix the parser' has been waiting for your review for 30 hours. https://github.com/acme/your-repo/pull/12"
+```
+
+## Configuration
+
+Pkl is the format to write. YAML (`config.yaml` in the same directory) is
+still accepted when no `config.pkl` is present. Do not copy a
+`package://` amends line. It does not resolve.
+
+## Slack setup (gh-nudge and gh-slack only)
+
+`gh-approve`, `gh-merge`, `gh-pr-review`, `gh-codeowners`, `gh-throttle`,
+and `gh-storage` do not read a Slack token. Only `gh-nudge` and `gh-slack` do.
+To get a Slack API token for GitHub Nudge:
+
+1. **Create a Slack App**:
+   - Go to the [Slack API website](https://api.slack.com/apps)
+   - Click "Create New App"
+   - Choose "From scratch"
+   - Name your app (e.g., "GitHub Nudge") and select your workspace
+   - Click "Create App"
+
+2. **Add Bot Permissions**:
+   - In the left sidebar, click on "OAuth & Permissions"
+   - Scroll down to "Scopes" section
+   - Under "Bot Token Scopes", add the following permissions:
+     - `chat:write` (to send messages)
+     - `im:write` (to send direct messages)
+     - `users:read` (to look up user information)
+
+3. **Install App to Workspace**:
+   - Scroll up to the top of the "OAuth & Permissions" page
+   - Click "Install to Workspace"
+   - Review the permissions and click "Allow"
+
+4. **Get Your Bot Token**:
+   - After installation, you'll be redirected back to the "OAuth & Permissions"
+     page
+   - Copy the "Bot User OAuth Token" that starts with `xoxb-`
+   - This is the token you'll need to add to your configuration file under
+     `slack.token`
+
+**Note**: Slack tokens are sensitive credentials. Consider using environment
+variables or a secrets manager in production environments rather than hardcoding
+the token in your configuration file.
+
+## Sharing GitHub rate limits
+
+`gh-nudge`, `gh-merge`, `gh-pr-review`, `gh-approve`, and the other
+commands run `$GH_BIN` wherever they would run `gh`. Unset, that is `gh`
+on `PATH`. Point it at `gh-throttle` so those calls share one queue.
+Only the `gh` binary is redirected.
+
+```sh
+export GH_BIN=gh-throttle
+gh-nudge --dry-run
+gh-throttle --stats
+```
+
+Setup, `--stats`, account-wide cooldowns, preflight exit `75`
+(`GH_THROTTLE_RATE_LIMITED`), and the limits are in [gh-throttle](gh-throttle.md).
+
+## Development
+
+All 8 binaries (`gh-nudge`, `gh-approve`, `gh-codeowners`, `gh-merge`,
+`gh-pr-review`, `gh-slack`, `gh-storage`, and `gh-throttle`) implement
+the standard `toolcli` protocol subcommands: `version [--json]`, ~update
+[--check] [--ref <ref>] [--json]~, `doctor [--json] [--offline]`, and
+`skill [install|uninstall|status ...]` (when invoked via a `gh` symlink,
+`gh-throttle` passes all commands through to `gh`).
+
+From the repository root, `make check`.
+
+The tools are MIT licensed.

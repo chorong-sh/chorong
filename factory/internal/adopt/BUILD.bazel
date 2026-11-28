@@ -1,0 +1,44 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "go_default_library",
+    srcs = ["adopt.go"],
+    importpath = "github.com/chorong-sh/chorong/factory/internal/adopt",
+    visibility = ["//factory:__subpackages__"],
+    deps = [
+        "//factory/internal/config:go_default_library",
+        "//factory/internal/gh:go_default_library",
+        "//factory/internal/herdr:go_default_library",
+        "//factory/internal/ready:go_default_library",
+        "//factory/internal/source:go_default_library",
+        "//factory/internal/store:go_default_library",
+    ],
+)
+
+go_test(
+    name = "go_default_test",
+    srcs = [
+        "adopt_test.go",
+        "github_status_test.go",
+    ],
+    embed = [":go_default_library"],
+    deps = [
+        "//factory/internal/config:go_default_library",
+        "//factory/internal/gh:go_default_library",
+        "//factory/internal/herdr:go_default_library",
+        "//factory/internal/ready:go_default_library",
+        "//factory/internal/source:go_default_library",
+        "//factory/internal/source/fake:go_default_library",
+        "//factory/internal/source/jira:go_default_library",
+        "//factory/internal/store:go_default_library",
+    ],
+)
+
+filegroup(
+    name = "go_srcs",
+    srcs = glob(
+        ["**/*.go"],
+        exclude = ["**/*_test.go"],
+    ),
+    visibility = ["//tools/lint:__pkg__"],
+)

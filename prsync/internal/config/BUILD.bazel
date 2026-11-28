@@ -1,0 +1,42 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "go_default_library",
+    srcs = [
+        "config.go",
+        "joblanes.go",
+        "loop.go",
+        "opentabs.go",
+        "parse.go",
+        "policy.go",
+        "scope.go",
+    ],
+    importpath = "github.com/chorong-sh/chorong/prsync/internal/config",
+    visibility = ["//prsync:__subpackages__"],
+    deps = [
+        "//pkg/ghcli:go_default_library",
+        "//pkg/procinfo:go_default_library",
+    ],
+)
+
+go_test(
+    name = "go_default_test",
+    srcs = [
+        "config_test.go",
+        "joblanes_test.go",
+        "loop_test.go",
+        "opentabs_test.go",
+        "policy_test.go",
+        "scope_test.go",
+    ],
+    embed = [":go_default_library"],
+)
+
+filegroup(
+    name = "go_srcs",
+    srcs = glob(
+        ["**/*.go"],
+        exclude = ["**/*_test.go"],
+    ),
+    visibility = ["//tools/lint:__pkg__"],
+)

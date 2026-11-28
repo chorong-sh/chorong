@@ -1,0 +1,866 @@
+package github
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"strconv"
+	"strings"
+
+	"github.com/chorong-sh/chorong/gh-nudge/internal/models"
+)
+
+// userReviewRequestedQuery finds open pull requests that request the viewer
+// as an individual. A request to a team the viewer belongs to does not match.
+const userReviewRequestedQuery = "is:pr is:open archived:false user-review-requested:@me"
+
+// ApprovalPullRequest is the pull request state gh-approve evaluates.
+// A non-empty *Err field means that data could not be read completely.
+type ApprovalPullRequest struct {
+	Ref     PullRef
+	URL     string
+	Title   string
+	State   string
+	Author  string
+	HeadSHA string
+	// NodeID is the GraphQL node id. markFileAsViewed needs it.
+	NodeID       string
+	Draft        bool
+	Additions    int
+	Deletions    int
+	ChangedFiles int
+	Files        []models.File
+	FilesErr     string
+	// ViewedStates maps file path to live viewerViewedState when loaded
+	// via LoadApprovalPullRequests without full Files.
+	ViewedStates map[string]string
+	// Patches are the REST file patches. Nil means they were not fetched.
+	Patches    []PullFile
+	PatchesErr string
+	Labels     []string
+	LabelsErr  string
+	// RequestedUsers are the logins requested as individuals.
+	RequestedUsers []string
+	// RequestedTeams are the slugs of requested teams.
+	RequestedTeams    []string
+	Reviews           []ApprovalReview
+	UnresolvedThreads int
+	ThreadsErr        string
+	// Checks are the status checks on the head commit.
+	Checks    []ApprovalCheck
+	ChecksErr string
+	// BaseRef is the base branch name.
+	BaseRef string
+	// BaseSHA is the base branch commit OID.
+	BaseSHA string
+	// Ownership is set by gh-approve when a rule sets a CODEOWNERS condition.
+	// Nil means it was not read.
+	Ownership *Ownership
+	// GeneratedPatterns holds globs from the repository's generated_lists file.
+	GeneratedPatterns []string
+	// GeneratedErr holds why the generated list could not be loaded or parsed.
+	GeneratedErr string
+	// GeneratedLoaded reports whether GeneratedPatterns was populated.
+	GeneratedLoaded bool
+}
+
+// ApprovalCandidate is the search data used to reject a pull request before
+// loading its full approval metadata.
+type ApprovalCandidate struct {
+	Ref          PullRef
+	URL          string
+	Title        string
+	Author       string
+	Draft        bool
+	Additions    int
+	Deletions    int
+	ChangedFiles int
+	Labels       []string
+}
+
+// ApprovalReview is one submitted review, oldest first.
+type ApprovalReview struct {
+	Author    string
+	State     string
+	CommitSHA string
+}
+
+// ApprovalCheck is one status check on the head commit.
+// Outcome is models.ChecksPass, models.ChecksFail, or models.ChecksPending.
+type ApprovalCheck struct {
+	Name     string
+	Required bool
+	Outcome  string
+}
+
+const viewerQuery = `query { viewer { login } }`
+
+// ViewerLogin returns the login of the authenticated gh user.
+func (c *Client) ViewerLogin() (string, error) {
+	body, callErr := c.graphqlQuery(viewerQuery, nil)
+	if err := graphqlCallError("read viewer", body, callErr); err != nil {
+		return "", err
+	}
+	var resp struct {
+		Data struct {
+			Viewer struct {
+				Login string `json:"login"`
+			} `json:"viewer"`
+		} `json:"data"`
+	}
+	if err := body.decode(&resp); err != nil {
+		return "", fmt.Errorf("read viewer: %w", err)
+	}
+	if resp.Data.Viewer.Login == "" {
+		return "", fmt.Errorf("read viewer: empty login")
+	}
+	return resp.Data.Viewer.Login, nil
+}
+
+const searchPullRequestsQuery = `
+query($q: String!, $after: String) {
+  search(query: $q, type: ISSUE, first: 100, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      ... on PullRequest {
+        number url title isDraft author { login }
+        changedFiles additions deletions
+        labels(first: 100) { nodes { name } }
+        repository { nameWithOwner }
+      }
+    }
+  }
+}`
+
+// reviewRequestedQuery also finds pull requests that request a team the
+// viewer belongs to.
+const reviewRequestedQuery = "is:pr is:open archived:false review-requested:@me"
+
+// SearchUserReviewRequested lists open pull requests that request the viewer
+// as an individual, across all pages.
+func (c *Client) SearchUserReviewRequested() ([]PullRef, error) {
+	candidates, err := c.searchApprovalCandidates(userReviewRequestedQuery)
+	return candidateRefs(candidates), err
+}
+
+// SearchReviewRequested lists open pull requests that request the viewer as
+// an individual or through a team, across all pages.
+func (c *Client) SearchReviewRequested() ([]PullRef, error) {
+	candidates, err := c.searchApprovalCandidates(reviewRequestedQuery)
+	return candidateRefs(candidates), err
+}
+
+// SearchApprovalCandidates searches individual requests and returns the
+// metadata needed for cheap rule checks with each result.
+func (c *Client) SearchApprovalCandidates() ([]ApprovalCandidate, error) {
+	return c.searchApprovalCandidates(userReviewRequestedQuery)
+}
+
+// SearchTeamApprovalCandidates searches the viewer's team requests. Each
+// label set gets its own search; an empty set preserves the unfiltered search.
+func (c *Client) SearchTeamApprovalCandidates(labelSets [][]string) ([]ApprovalCandidate, error) {
+	if len(labelSets) == 0 {
+		labelSets = [][]string{{}}
+	}
+	var candidates []ApprovalCandidate
+	seen := make(map[string]bool)
+	for _, labels := range labelSets {
+		query := reviewRequestedQuery
+		for _, label := range labels {
+			query += " label:\"" + strings.ReplaceAll(label, "\"", "\\\"") + "\""
+		}
+		found, err := c.searchApprovalCandidates(query)
+		if err != nil {
+			return nil, err
+		}
+		for _, candidate := range found {
+			key := fmt.Sprintf("%s/%s#%d", candidate.Ref.Owner, candidate.Ref.Repo, candidate.Ref.Number)
+			if !seen[key] {
+				seen[key] = true
+				candidates = append(candidates, candidate)
+			}
+		}
+	}
+	return candidates, nil
+}
+
+func candidateRefs(candidates []ApprovalCandidate) []PullRef {
+	refs := make([]PullRef, 0, len(candidates))
+	for _, candidate := range candidates {
+		refs = append(refs, candidate.Ref)
+	}
+	return refs
+}
+
+func (c *Client) searchApprovalCandidates(query string) ([]ApprovalCandidate, error) {
+	var candidates []ApprovalCandidate
+	after := ""
+	for {
+		fields := []string{"-f", "q=" + query}
+		if after != "" {
+			fields = append(fields, "-f", "after="+after)
+		}
+		body, callErr := c.graphqlQuery(searchPullRequestsQuery, fields)
+		if err := graphqlCallError("search review requests", body, callErr); err != nil {
+			return nil, err
+		}
+		var resp struct {
+			Data struct {
+				Search struct {
+					PageInfo struct {
+						HasNextPage bool   `json:"hasNextPage"`
+						EndCursor   string `json:"endCursor"`
+					} `json:"pageInfo"`
+					Nodes []struct {
+						Number  int    `json:"number"`
+						URL     string `json:"url"`
+						Title   string `json:"title"`
+						IsDraft bool   `json:"isDraft"`
+						Author  *struct {
+							Login string `json:"login"`
+						} `json:"author"`
+						ChangedFiles int `json:"changedFiles"`
+						Additions    int `json:"additions"`
+						Deletions    int `json:"deletions"`
+						Labels       struct {
+							Nodes []struct {
+								Name string `json:"name"`
+							} `json:"nodes"`
+						} `json:"labels"`
+						Repository struct {
+							NameWithOwner string `json:"nameWithOwner"`
+						} `json:"repository"`
+					} `json:"nodes"`
+				} `json:"search"`
+			} `json:"data"`
+		}
+		if err := body.decode(&resp); err != nil {
+			return nil, fmt.Errorf("search review requests: %w", err)
+		}
+		for _, node := range resp.Data.Search.Nodes {
+			owner, repo, ok := strings.Cut(node.Repository.NameWithOwner, "/")
+			if node.Number == 0 || !ok {
+				continue
+			}
+			ref := PullRef{Owner: owner, Repo: repo, Number: node.Number, Raw: node.URL}
+			candidate := ApprovalCandidate{Ref: ref, URL: node.URL, Title: node.Title, Draft: node.IsDraft, ChangedFiles: node.ChangedFiles, Additions: node.Additions, Deletions: node.Deletions}
+			if node.Author != nil {
+				candidate.Author = node.Author.Login
+			}
+			for _, label := range node.Labels.Nodes {
+				candidate.Labels = append(candidate.Labels, label.Name)
+			}
+			candidates = append(candidates, candidate)
+		}
+		page := resp.Data.Search.PageInfo
+		if !page.HasNextPage || page.EndCursor == "" {
+			return candidates, nil
+		}
+		after = page.EndCursor
+	}
+}
+
+const approvalPullRequestQuery = `
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    nameWithOwner
+    pullRequest(number: $number) {
+      id number url title state isDraft headRefOid baseRefName baseRefOid
+      author { login }
+      additions deletions changedFiles
+      files(first: 100) { pageInfo { hasNextPage } nodes { path additions deletions viewerViewedState } }
+      labels(first: 100) { pageInfo { hasNextPage } nodes { name } }
+      reviewRequests(first: 100) {
+        nodes { requestedReviewer { __typename ... on User { login } ... on Team { slug } } }
+      }
+      reviews(last: 100) { nodes { author { login } state commit { oid } } }
+      reviewThreads(first: 100) { totalCount nodes { isResolved } }
+      commits(last: 1) {
+        nodes {
+          commit {
+            oid
+            statusCheckRollup {
+              contexts(first: 100) {
+                pageInfo { hasNextPage }
+                nodes {
+                  __typename
+                  ... on CheckRun { name status conclusion isRequired(pullRequestNumber: $number) }
+                  ... on StatusContext { context state isRequired(pullRequestNumber: $number) }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}`
+
+type pageInfoJSON struct {
+	HasNextPage bool `json:"hasNextPage"`
+}
+
+type approvalPRJSON struct {
+	ID          string `json:"id"`
+	Number      int    `json:"number"`
+	URL         string `json:"url"`
+	Title       string `json:"title"`
+	State       string `json:"state"`
+	IsDraft     bool   `json:"isDraft"`
+	HeadRefOid  string `json:"headRefOid"`
+	BaseRefName string `json:"baseRefName"`
+	BaseRefOid  string `json:"baseRefOid"`
+	Author      *struct {
+		Login string `json:"login"`
+	} `json:"author"`
+	Additions    int `json:"additions"`
+	Deletions    int `json:"deletions"`
+	ChangedFiles int `json:"changedFiles"`
+	Files        *struct {
+		PageInfo pageInfoJSON  `json:"pageInfo"`
+		Nodes    []models.File `json:"nodes"`
+	} `json:"files"`
+	Labels *struct {
+		PageInfo pageInfoJSON `json:"pageInfo"`
+		Nodes    []struct {
+			Name string `json:"name"`
+		} `json:"nodes"`
+	} `json:"labels"`
+	ReviewRequests struct {
+		Nodes []struct {
+			RequestedReviewer *struct {
+				TypeName string `json:"__typename"` //nolint:tagliatelle // GraphQL field name
+				Login    string `json:"login"`
+				Slug     string `json:"slug"`
+			} `json:"requestedReviewer"`
+		} `json:"nodes"`
+	} `json:"reviewRequests"`
+	Reviews struct {
+		Nodes []struct {
+			Author *struct {
+				Login string `json:"login"`
+			} `json:"author"`
+			State  string `json:"state"`
+			Commit *struct {
+				OID string `json:"oid"`
+			} `json:"commit"`
+		} `json:"nodes"`
+	} `json:"reviews"`
+	ReviewThreads *struct {
+		TotalCount int `json:"totalCount"`
+		Nodes      []struct {
+			IsResolved bool `json:"isResolved"`
+		} `json:"nodes"`
+	} `json:"reviewThreads"`
+	Commits struct {
+		Nodes []struct {
+			Commit struct {
+				OID               string `json:"oid"`
+				StatusCheckRollup *struct {
+					Contexts struct {
+						PageInfo pageInfoJSON        `json:"pageInfo"`
+						Nodes    []approvalCheckJSON `json:"nodes"`
+					} `json:"contexts"`
+				} `json:"statusCheckRollup"`
+			} `json:"commit"`
+		} `json:"nodes"`
+	} `json:"commits"`
+}
+
+type approvalCheckJSON struct {
+	TypeName   string `json:"__typename"` //nolint:tagliatelle // GraphQL field name
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+	Context    string `json:"context"`
+	State      string `json:"state"`
+	IsRequired bool   `json:"isRequired"`
+}
+
+// ApprovalPullRequestBatchSize is the maximum number of pull requests
+// requested in a single batched GraphQL query.
+const ApprovalPullRequestBatchSize = 25
+
+// BatchPullRequestResult holds either the loaded light pull request state
+// or the per-PR error when that pull request could not be read.
+type BatchPullRequestResult struct {
+	PR  ApprovalPullRequest
+	Err error
+}
+
+// ApprovalRefKey returns the canonical owner/repo#number key for ref.
+func ApprovalRefKey(ref PullRef) string {
+	return fmt.Sprintf("%s/%s#%d", ref.Owner, ref.Repo, ref.Number)
+}
+
+// LoadApprovalPullRequests loads the light per-PR state (everything except
+// changed file paths) for refs in batched GraphQL queries of up to
+// ApprovalPullRequestBatchSize pull requests each. An empty slice makes no
+// calls. Per-PR errors (e.g. NOT_FOUND or FORBIDDEN) are recorded in the
+// corresponding BatchPullRequestResult without failing the rest of the batch.
+func (c *Client) LoadApprovalPullRequests(refs []PullRef) (map[string]BatchPullRequestResult, error) {
+	out := make(map[string]BatchPullRequestResult, len(refs))
+	for start := 0; start < len(refs); start += ApprovalPullRequestBatchSize {
+		end := start + ApprovalPullRequestBatchSize
+		if end > len(refs) {
+			end = len(refs)
+		}
+		part, err := c.loadApprovalPullRequestBatch(refs[start:end])
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range part {
+			out[k] = v
+		}
+	}
+	return out, nil
+}
+
+type approvalBatchAlias struct {
+	name string
+	key  string
+	ref  PullRef
+}
+
+func approvalBatchQuery(refs []PullRef) (string, []approvalBatchAlias, error) {
+	var b strings.Builder
+	b.WriteString("query{")
+	aliases := make([]approvalBatchAlias, len(refs))
+	for i, ref := range refs {
+		owner, err := gqlQuote(ref.Owner)
+		if err != nil {
+			return "", nil, err
+		}
+		name, err := gqlQuote(ref.Repo)
+		if err != nil {
+			return "", nil, err
+		}
+		alias := "p" + strconv.Itoa(i)
+		aliases[i] = approvalBatchAlias{name: alias, key: ApprovalRefKey(ref), ref: ref}
+		fmt.Fprintf(&b, `%s:repository(owner:%s,name:%s){pullRequest(number:%d){`+
+			`id number url title state isDraft headRefOid baseRefName baseRefOid `+
+			`author{login} additions deletions changedFiles `+
+			`files(first:100){pageInfo{hasNextPage} nodes{path viewerViewedState}} `+
+			`labels(first:100){pageInfo{hasNextPage} nodes{name}} `+
+			`reviewRequests(first:100){nodes{requestedReviewer{__typename ... on User{login} ... on Team{slug}}}} `+
+			`reviews(last:100){nodes{author{login} state commit{oid}}} `+
+			`reviewThreads(first:100){totalCount nodes{isResolved}} `+
+			`commits(last:1){nodes{commit{oid statusCheckRollup{contexts(first:100){pageInfo{hasNextPage} nodes{__typename `+
+			`... on CheckRun{name status conclusion isRequired(pullRequestNumber:%d)} `+
+			`... on StatusContext{context state isRequired(pullRequestNumber:%d)}`+
+			`}}}}}}`+
+			`}}`,
+			alias, owner, name, ref.Number, ref.Number, ref.Number)
+	}
+	b.WriteString("}")
+	return b.String(), aliases, nil
+}
+
+type batchPullRequestEnvelope struct {
+	Data map[string]*struct {
+		PullRequest *approvalPRJSON `json:"pullRequest"`
+	} `json:"data"`
+	Errors []struct {
+		Type    string            `json:"type"`
+		Message string            `json:"message"`
+		Path    []json.RawMessage `json:"path"`
+	} `json:"errors"`
+}
+
+func collectBatchAliasErrors(envelope batchPullRequestEnvelope, aliases []approvalBatchAlias) (map[string]string, error) {
+	known := make(map[string]bool, len(aliases))
+	for _, a := range aliases {
+		known[a.name] = true
+	}
+	perAliasErr := make(map[string]string)
+	for _, item := range envelope.Errors {
+		msg := strings.TrimSpace(item.Message)
+		if msg == "" {
+			msg = item.Type
+		}
+		if msg == "" {
+			msg = "graphql error"
+		}
+		lower := strings.ToLower(msg)
+		if strings.Contains(lower, "rate limit") || strings.Contains(lower, "abuse detection") {
+			return nil, fmt.Errorf("%s", msg)
+		}
+		alias := pathAlias(item.Path)
+		if !known[alias] {
+			return nil, fmt.Errorf("%s", msg)
+		}
+		if _, exists := perAliasErr[alias]; !exists {
+			perAliasErr[alias] = msg
+		}
+	}
+	return perAliasErr, nil
+}
+
+func (c *Client) loadApprovalPullRequestBatch(refs []PullRef) (map[string]BatchPullRequestResult, error) {
+	query, aliases, err := approvalBatchQuery(refs)
+	if err != nil {
+		return nil, err
+	}
+	body, callErr := c.graphqlQuery(query, nil)
+	if strings.TrimSpace(body.stdout) == "" {
+		if gErr := graphqlCallError("load pull requests", body, callErr); gErr != nil {
+			return nil, gErr
+		}
+		return nil, fmt.Errorf("load pull requests: %w", body.parseError(io.ErrUnexpectedEOF))
+	}
+	var envelope batchPullRequestEnvelope
+	if err := body.decode(&envelope); err != nil {
+		if gErr := graphqlCallError("load pull requests", body, callErr); gErr != nil {
+			return nil, gErr
+		}
+		return nil, fmt.Errorf("load pull requests: %w", err)
+	}
+	perAliasErr, err := collectBatchAliasErrors(envelope, aliases)
+	if err != nil {
+		return nil, graphqlCallError("load pull requests", body, callErr)
+	}
+	if envelope.Data == nil && len(perAliasErr) == 0 {
+		return nil, graphqlCallError("load pull requests", body, callErr)
+	}
+	out := make(map[string]BatchPullRequestResult, len(aliases))
+	for _, a := range aliases {
+		if msg, failed := perAliasErr[a.name]; failed {
+			out[a.key] = BatchPullRequestResult{Err: fmt.Errorf("load pull request %s: %s", a.key, msg)}
+			continue
+		}
+		var node *approvalPRJSON
+		if envelope.Data != nil && envelope.Data[a.name] != nil {
+			node = envelope.Data[a.name].PullRequest
+		}
+		if node == nil {
+			out[a.key] = BatchPullRequestResult{Err: fmt.Errorf("load pull request %s: not found", a.key)}
+			continue
+		}
+		out[a.key] = BatchPullRequestResult{PR: convertApprovalLightPR(node, a.ref)}
+	}
+	return out, nil
+}
+
+// LoadApprovalPullRequest reads the pull request state gh-approve evaluates.
+// Data that cannot be read completely is reported in the *Err fields.
+func (c *Client) LoadApprovalPullRequest(ref PullRef) (ApprovalPullRequest, error) {
+	name := fmt.Sprintf("%s/%s#%d", ref.Owner, ref.Repo, ref.Number)
+	body, callErr := c.graphqlQuery(approvalPullRequestQuery, []string{
+		"-f", "owner=" + ref.Owner,
+		"-f", "name=" + ref.Repo,
+		"-F", "number=" + strconv.Itoa(ref.Number),
+	})
+	if err := graphqlCallError("load pull request "+name, body, callErr); err != nil {
+		return ApprovalPullRequest{}, err
+	}
+	var resp struct {
+		Data struct {
+			Repository *struct {
+				PullRequest *approvalPRJSON `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+	if err := body.decode(&resp); err != nil {
+		return ApprovalPullRequest{}, fmt.Errorf("load pull request %s: %w", name, err)
+	}
+	if resp.Data.Repository == nil || resp.Data.Repository.PullRequest == nil {
+		return ApprovalPullRequest{}, fmt.Errorf("load pull request %s: not found", name)
+	}
+	return convertApprovalPR(resp.Data.Repository.PullRequest, ref), nil
+}
+
+func convertApprovalLightPR(raw *approvalPRJSON, ref PullRef) ApprovalPullRequest {
+	pr := ApprovalPullRequest{
+		Ref:          ref,
+		URL:          raw.URL,
+		Title:        raw.Title,
+		State:        raw.State,
+		HeadSHA:      raw.HeadRefOid,
+		NodeID:       raw.ID,
+		BaseRef:      raw.BaseRefName,
+		BaseSHA:      raw.BaseRefOid,
+		Draft:        raw.IsDraft,
+		Additions:    raw.Additions,
+		Deletions:    raw.Deletions,
+		ChangedFiles: raw.ChangedFiles,
+	}
+	if raw.Author != nil {
+		pr.Author = raw.Author.Login
+	}
+	pr.Labels, pr.LabelsErr = approvalLabels(raw)
+	pr.RequestedUsers, pr.RequestedTeams = requestedReviewers(raw)
+	pr.Reviews = approvalReviews(raw)
+	pr.UnresolvedThreads, pr.ThreadsErr = unresolvedThreads(raw)
+	pr.Checks, pr.ChecksErr = approvalChecks(raw)
+	pr.ViewedStates = approvalViewedStates(raw)
+	if raw.Files != nil && raw.Files.PageInfo.HasNextPage {
+		pr.FilesErr = "more than 100 changed files; file list incomplete"
+	}
+	return pr
+}
+
+func approvalViewedStates(raw *approvalPRJSON) map[string]string {
+	if raw.Files == nil || raw.Files.PageInfo.HasNextPage || len(raw.Files.Nodes) == 0 {
+		return nil
+	}
+	states := make(map[string]string, len(raw.Files.Nodes))
+	for _, f := range raw.Files.Nodes {
+		if f.Path != "" && f.ViewerViewedState != "" {
+			states[f.Path] = f.ViewerViewedState
+		}
+	}
+	if len(states) == 0 {
+		return nil
+	}
+	return states
+}
+
+func convertApprovalPR(raw *approvalPRJSON, ref PullRef) ApprovalPullRequest {
+	pr := convertApprovalLightPR(raw, ref)
+	pr.Files, pr.FilesErr = approvalFiles(raw)
+	return pr
+}
+
+func approvalFiles(raw *approvalPRJSON) ([]models.File, string) {
+	switch {
+	case raw.Files == nil:
+		return nil, "file list missing"
+	case raw.Files.PageInfo.HasNextPage:
+		return nil, "more than 100 changed files; file list incomplete"
+	default:
+		return raw.Files.Nodes, ""
+	}
+}
+
+func approvalLabels(raw *approvalPRJSON) ([]string, string) {
+	switch {
+	case raw.Labels == nil:
+		return nil, "labels missing"
+	case raw.Labels.PageInfo.HasNextPage:
+		return nil, "more than 100 labels; label list incomplete"
+	}
+	labels := make([]string, 0, len(raw.Labels.Nodes))
+	for _, label := range raw.Labels.Nodes {
+		labels = append(labels, label.Name)
+	}
+	return labels, ""
+}
+
+func requestedReviewers(raw *approvalPRJSON) (users, teams []string) {
+	for _, node := range raw.ReviewRequests.Nodes {
+		reviewer := node.RequestedReviewer
+		if reviewer == nil {
+			continue
+		}
+		switch reviewer.TypeName {
+		case "User":
+			users = append(users, reviewer.Login)
+		case "Team":
+			teams = append(teams, reviewer.Slug)
+		}
+	}
+	return users, teams
+}
+
+func approvalReviews(raw *approvalPRJSON) []ApprovalReview {
+	reviews := make([]ApprovalReview, 0, len(raw.Reviews.Nodes))
+	for _, node := range raw.Reviews.Nodes {
+		review := ApprovalReview{State: node.State}
+		if node.Author != nil {
+			review.Author = node.Author.Login
+		}
+		if node.Commit != nil {
+			review.CommitSHA = node.Commit.OID
+		}
+		reviews = append(reviews, review)
+	}
+	return reviews
+}
+
+func unresolvedThreads(raw *approvalPRJSON) (int, string) {
+	threads := raw.ReviewThreads
+	if threads == nil {
+		return 0, "review thread data missing"
+	}
+	if threads.TotalCount > len(threads.Nodes) {
+		return 0, fmt.Sprintf("read %d of %d review threads", len(threads.Nodes), threads.TotalCount)
+	}
+	unresolved := 0
+	for _, thread := range threads.Nodes {
+		if !thread.IsResolved {
+			unresolved++
+		}
+	}
+	return unresolved, ""
+}
+
+func approvalChecks(raw *approvalPRJSON) ([]ApprovalCheck, string) {
+	if len(raw.Commits.Nodes) == 0 {
+		return nil, "head commit missing"
+	}
+	commit := raw.Commits.Nodes[0].Commit
+	if commit.OID != raw.HeadRefOid {
+		return nil, fmt.Sprintf("check data is for %s, not head %s", commit.OID, raw.HeadRefOid)
+	}
+	if commit.StatusCheckRollup == nil {
+		return nil, "check data missing on head commit"
+	}
+	contexts := commit.StatusCheckRollup.Contexts
+	if contexts.PageInfo.HasNextPage {
+		return nil, "more than 100 checks; check list incomplete"
+	}
+	checks := make([]ApprovalCheck, 0, len(contexts.Nodes))
+	for _, node := range contexts.Nodes {
+		status := models.StatusCheck{
+			Name:       node.Name,
+			Status:     node.Status,
+			Conclusion: node.Conclusion,
+			State:      node.State,
+			Context:    node.Context,
+		}
+		name := node.Name
+		if name == "" {
+			name = node.Context
+		}
+		outcome := (&models.PullRequest{StatusCheckRollup: []models.StatusCheck{status}}).ChecksStatus()
+		checks = append(checks, ApprovalCheck{Name: name, Required: node.IsRequired, Outcome: outcome})
+	}
+	return checks, ""
+}
+
+const markFileAsViewedMutation = `
+mutation($id: ID!, $path: String!) {
+  markFileAsViewed(input: {pullRequestId: $id, path: $path}) {
+    clientMutationId
+  }
+}`
+
+// MarkFileAsViewed ticks the viewer's Viewed checkbox for path. It does
+// not approve anything. One call is one mutation, and it is not retried.
+func (c *Client) MarkFileAsViewed(ref PullRef, pullRequestID, path string) error {
+	name := fmt.Sprintf("%s/%s#%d", ref.Owner, ref.Repo, ref.Number)
+	if pullRequestID == "" {
+		return fmt.Errorf("mark %s viewed on %s: pull request id is empty", path, name)
+	}
+	body, callErr := c.graphqlMutation(markFileAsViewedMutation, []string{
+		"-f", "id=" + pullRequestID,
+		"-f", "path=" + path,
+	})
+	if err := graphqlCallError("mark "+path+" viewed on "+name, body, callErr); err != nil {
+		return err
+	}
+	return nil
+}
+
+// PullFile is one changed file from the pulls/{n}/files REST list.
+// PatchSet is false when GitHub omitted the patch, as it does for a
+// binary file or a patch that is too large.
+type PullFile struct {
+	Path      string
+	Previous  string
+	Status    string
+	Additions int
+	Deletions int
+	Patch     string
+	PatchSet  bool
+}
+
+type pullFileJSON struct {
+	Filename         string  `json:"filename"`
+	PreviousFilename string  `json:"previous_filename"` //nolint:tagliatelle // GitHub API uses snake_case
+	Status           string  `json:"status"`
+	Additions        int     `json:"additions"`
+	Deletions        int     `json:"deletions"`
+	Patch            *string `json:"patch"`
+}
+
+// PullRequestFilePatches reads every changed file's patch. gh paginates
+// the REST list. A file whose patch GitHub omitted has PatchSet false.
+func (c *Client) PullRequestFilePatches(ref PullRef) ([]PullFile, error) {
+	name := fmt.Sprintf("%s/%s#%d", ref.Owner, ref.Repo, ref.Number)
+	path := fmt.Sprintf("repos/%s/%s/pulls/%d/files?per_page=100", ref.Owner, ref.Repo, ref.Number)
+	output, err := c.runGHJSON("api", "--paginate", path)
+	if err != nil {
+		return nil, fmt.Errorf("read patches of %s: %w", name, err)
+	}
+	var raw []pullFileJSON
+	if err := output.decode(&raw); err != nil {
+		return nil, fmt.Errorf("read patches of %s: %w", name, err)
+	}
+	files := make([]PullFile, len(raw))
+	for i, file := range raw {
+		got := PullFile{
+			Path:      file.Filename,
+			Previous:  file.PreviousFilename,
+			Status:    file.Status,
+			Additions: file.Additions,
+			Deletions: file.Deletions,
+			PatchSet:  file.Patch != nil,
+		}
+		if file.Patch != nil {
+			got.Patch = *file.Patch
+		}
+		files[i] = got
+	}
+	return files, nil
+}
+
+// PullRequestHeadSHA reads the current head SHA through the REST API.
+func (c *Client) PullRequestHeadSHA(ref PullRef) (string, error) {
+	name := fmt.Sprintf("%s/%s#%d", ref.Owner, ref.Repo, ref.Number)
+	path := fmt.Sprintf("repos/%s/%s/pulls/%d", ref.Owner, ref.Repo, ref.Number)
+	out, err := c.runGHOnce([]string{"api", path, "--jq", ".head.sha"})
+	stderr := out.stderr
+	if err != nil {
+		return "", fmt.Errorf("read head of %s: %w\n%s", name, err, stderr)
+	}
+	sha := strings.TrimSpace(out.stdout)
+	if !isCommitSHA(sha) {
+		return "", fmt.Errorf("read head of %s: expected a commit SHA on stdout, found %q (stderr: %q)",
+			name, firstLine(sha), firstLine(out.stderr))
+	}
+	return sha, nil
+}
+
+// isCommitSHA reports whether s is a full hex commit id (SHA-1 or SHA-256).
+func isCommitSHA(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	for _, r := range s {
+		if !strings.ContainsRune("0123456789abcdef", r) {
+			return false
+		}
+	}
+	return true
+}
+
+// PullRequestDiff reads the pull request's unified diff through the REST API.
+// Only stdout is returned, so a gh warning cannot end up in the diff.
+func (c *Client) PullRequestDiff(ref PullRef) (string, error) {
+	path := fmt.Sprintf("repos/%s/%s/pulls/%d", ref.Owner, ref.Repo, ref.Number)
+	stdout, stderr, err := c.executeSeparated("gh", "api", path, "-H", "Accept: application/vnd.github.diff")
+	if err != nil {
+		return "", fmt.Errorf("read diff of %s/%s#%d: %w\n%s", ref.Owner, ref.Repo, ref.Number, err, stderr)
+	}
+	return stdout, nil
+}
+
+// ApprovePullRequest posts an APPROVE review pinned to commitSHA.
+// GitHub rejects the review when commitSHA is not part of the pull request.
+func (c *Client) ApprovePullRequest(ref PullRef, commitSHA, body string) error {
+	payload, err := json.Marshal(map[string]string{
+		"commit_id": commitSHA,
+		"event":     "APPROVE",
+		"body":      body,
+	})
+	if err != nil {
+		return fmt.Errorf("approve %s/%s#%d: %w", ref.Owner, ref.Repo, ref.Number, err)
+	}
+	path := fmt.Sprintf("repos/%s/%s/pulls/%d/reviews", ref.Owner, ref.Repo, ref.Number)
+	out, err := c.executor.ExecuteWithStdin(string(payload), "gh", "api", "--method", "POST", path, "--input", "-")
+	if err != nil {
+		return fmt.Errorf("approve %s/%s#%d: %w\n%s", ref.Owner, ref.Repo, ref.Number, err, out)
+	}
+	return nil
+}

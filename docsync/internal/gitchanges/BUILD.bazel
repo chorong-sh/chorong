@@ -1,0 +1,25 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "go_default_library",
+    srcs = ["gitchanges.go"],
+    importpath = "github.com/chorong-sh/chorong/docsync/internal/gitchanges",
+    visibility = ["//docsync:__subpackages__"],
+    deps = ["@com_github_jaeyeom_go_cmdexec//:go_default_library"],
+)
+
+go_test(
+    name = "go_default_test",
+    srcs = ["gitchanges_test.go"],
+    embed = [":go_default_library"],
+    deps = ["@com_github_jaeyeom_go_cmdexec//:go_default_library"],
+)
+
+filegroup(
+    name = "go_srcs",
+    srcs = glob(
+        ["**/*.go"],
+        exclude = ["**/*_test.go"],
+    ),
+    visibility = ["//tools/lint:__pkg__"],
+)

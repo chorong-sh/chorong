@@ -1,0 +1,213 @@
+amends "Config.pkl"
+
+github {
+  owner = "organization-name"
+  repos {
+    "repo-name-1"
+    "repo-name-2"
+  }
+}
+
+slack {
+  token = read("env:SLACK_TOKEN")
+  default_channel = "#code-reviews"
+  user_id_mapping {
+    ["github-username-1"] = "U12345"
+    ["github-username-2"] = "U67890"
+  }
+  dm_channel_id_mapping {
+    ["github-username-1"] = "C12345"
+    ["github-username-2"] = "C67890"
+  }
+  channel_routing {
+    new {
+      pattern = "frontend/.*\\.js$"
+      channel = "#frontend"
+    }
+    new {
+      pattern = "backend/.*\\.go$"
+      channel = "#backend"
+    }
+    new {
+      pattern = "docs/.*"
+      channel = "#documentation"
+    }
+  }
+}
+
+settings {
+  reminder_threshold_hours = 24
+  working_hours_only = true
+  dm_by_default = true
+  // Skip nudging unless the PR has all of these labels.
+  require_labels {
+    "ready-for-review"
+  }
+  // Skip nudging if the PR has any of these labels.
+  skip_labels {
+    "wip"
+    "do-not-nudge"
+  }
+  // Skip nudging these GitHub users. They do not need a Slack mapping.
+  skip_users {
+    "bot-account"
+    "contractor-who-opted-out"
+  }
+  // Also require each label to have been on the PR this long since it was last added.
+  // Empty means no age requirement. Add another `new { }` block for another label.
+  require_label_ages {
+    new {
+      label = "X"
+      min_hours = 24
+    }
+  }
+  // Hours since this reviewer was first requested. Zero disables the gate.
+  // A later request does not restart the clock.
+  min_first_review_request_hours = 24
+  // gh-merge skips a pull request that has any of these labels.
+  // gh-nudge ignores this list. Empty means no label blocks a merge.
+  block_merge_labels {
+    "do-not-merge"
+  }
+  // Check names that must be green before `gh-merge queue`.
+  // Empty makes queue refuse unless --allow-no-required-checks is set.
+  required_checks {
+    "ci"
+  }
+  // Regular expressions. A match is a hint, not a verdict.
+  flake_signatures {
+    "connection reset"
+  }
+  // Placeholders: {event_id} and {class}. Class is our-code, flake, infra, or manual.
+  rca_marker = "RCA {event_id} class={class}"
+  // Refuse another flake or infra requeue when the timeline count is greater than this.
+  max_requeues = 2
+}
+
+// One entry per <owner>/<repo>. A set field replaces settings.
+// A field left unset inherits settings. An empty list does not inherit.
+// gh-nudge ignores this mapping.
+repo_settings {
+  ["<owner>/<repo>"] {
+    required_checks {
+      "lint"
+    }
+    // Explicit empty list: no label blocks a merge for this repository.
+    block_merge_labels {}
+  }
+}
+
+// gh-approve only. Rules are ORed. The conditions in one rule are ANDed.
+// A pull request that no rule matches is left for a human. These are examples.
+approve {
+  // The matching rule name is appended as <!-- gh-approve: <rule> -->.
+  body = "LGTM"
+  skip_already_approved = true
+  // Skip pull requests that have an open CHANGES_REQUESTED review from any reviewer.
+  // skip_open_change_requests = true
+  rules {
+    // Only files under one internal dashboard directory.
+    new {
+      name = "internal-dashboard"
+      repos { "organization-name/repo-name-1" }
+      paths_all_match { "tools/internal-dashboard/**" }
+      checks = "green"
+    }
+    // Pure deletions.
+    new {
+      name = "pure-deletion"
+      pure_deletion = true
+      checks = "green"
+    }
+    // Deletions whose added lines are only comments or blank.
+    new {
+      name = "comment-cleanup"
+      deletions_and_comments_only = true
+      checks = "green"
+    }
+    // At most 50 changed lines outside CI and infra paths.
+    new {
+      name = "small-outside-infra"
+      max_changed_lines = 50
+      paths_none_match {
+        ".github/**"
+        ".circleci/**"
+        "infra/**"
+        "**/*.lock"
+        "**/go.sum"
+        "**/package-lock.json"
+      }
+      checks = "green"
+    }
+    // Small PRs, up to 200 lines, that carry an "internal-only" label.
+    new {
+      name = "internal-only"
+      max_changed_lines = 200
+      labels_required { "internal-only" }
+      checks = "allow_pending"
+    }
+    // Any rule may end with a command of yours, as argv (no shell). It runs
+    // only after the rule's other conditions pass, reads the PR metadata,
+    // files and diff as JSON on stdin, and prints
+    // {"decision": "approve" | "defer", "reason": "..."}.
+    // Failures and timeouts defer.
+    //
+    // Its approve and defer decisions are cached by input hash (stdin, argv,
+    // rule name) under $XDG_CACHE_HOME/gh-approve/agent, so an unchanged PR
+    // does not run it again. Failures are never cached. Set
+    // agent_cache = false on the rule, or pass --no-agent-cache, to bypass.
+    //
+    // new {
+    //   name = "docs-reviewed-by-agent"
+    //   paths_all_match { "docs/**" }
+    //   checks = "green"
+    //   agent_command { "/path/to/review-agent"; "--strict" }
+    //   agent_timeout = 60.s
+    //   // agent_cache = false
+    // }
+    //
+    // A hand-off rule never approves. It requests `reviewers`, then removes
+    // you as an individual requested reviewer. It acts at most once per pull
+    // request: if your own account removed you and you were requested again,
+    // the pull request stays with you.
+    new {
+      name = "dashboard-handoff"
+      action = "handoff"
+      reviewers { "colleague" }
+      paths_any_match { "tools/dashboard/**" }
+      authors_deny { "colleague" }
+      codeowners_covered = true
+    }
+  }
+}
+
+// Files the user never reads, marked viewed on a pull request no approve
+// or hand-off rule took. By default, DISMISSED files (changed since last
+// viewed) that still match a rule are re-marked; set remark_dismissed = false
+// to mark only UNVIEWED files.
+viewed {
+  enabled = true
+  // remark_dismissed = false
+  never_mark { "**/*.go"; "**/*.py"; "**/*.proto" }
+  rules {
+    new { name = "locks"; paths_match { "**/*.lock"; "**/go.sum"; "**/pnpm-lock.yaml" } }
+    new { name = "not-mine"; codeowners_not_mine = true; paths_none_match { "docs/**" } }
+  }
+}
+
+// gh-pr-review rerequest settings. Skip bot-like User accounts in addition to
+// GitHub Bot accounts (unless --include-bots is passed).
+rerequest {
+  exclude_reviewers {
+    "*-bot"
+    "agent-*"
+  }
+}
+
+// gh-pr-review submit settings. Off by default; set via_outbox = true to route
+// `gh-pr-review submit` through `gh-outbox` for decide approval.
+// review_post {
+//   via_outbox = true
+//   owner = "my-agent"
+//   outbox_command { "gh-outbox" }
+// }

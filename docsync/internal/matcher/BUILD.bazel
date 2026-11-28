@@ -1,0 +1,28 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "go_default_library",
+    srcs = ["matcher.go"],
+    importpath = "github.com/chorong-sh/chorong/docsync/internal/matcher",
+    visibility = ["//docsync:__subpackages__"],
+    deps = [
+        "//docsync/internal/mapping:go_default_library",
+        "@com_github_bmatcuk_doublestar_v4//:go_default_library",
+    ],
+)
+
+go_test(
+    name = "go_default_test",
+    srcs = ["matcher_test.go"],
+    embed = [":go_default_library"],
+    deps = ["//docsync/internal/mapping:go_default_library"],
+)
+
+filegroup(
+    name = "go_srcs",
+    srcs = glob(
+        ["**/*.go"],
+        exclude = ["**/*_test.go"],
+    ),
+    visibility = ["//tools/lint:__pkg__"],
+)

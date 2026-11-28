@@ -1,0 +1,44 @@
+load("@gazelle//:def.bzl", "gazelle")
+
+# Gazelle configuration
+gazelle(
+    name = "gazelle",
+    command = "fix",
+    extra_args = [
+        "-build_file_name=BUILD.bazel",
+        "-repo_root=.",
+        "-go_naming_convention=go_default_library",
+        "-go_prefix=github.com/chorong-sh/chorong",
+    ],
+    prefix = "github.com/chorong-sh/chorong",
+)
+
+# Format alias
+alias(
+    name = "format",
+    actual = "//tools/format:format",
+)
+
+exports_files(
+    [
+        "CHANGELOG.md",
+        "MODULE.bazel",
+        "PklProject",
+        "PklProject.deps.json",
+        "README.md",
+        "go.mod",
+        ".gitleaks.toml",
+        ".release-please-manifest.json",
+        ".shellcheckrc",
+        "release-please-config.json",
+    ],
+)
+
+filegroup(
+    name = "sh_srcs",
+    srcs = glob(
+        ["*.sh"],
+        allow_empty = True,
+    ),
+    visibility = ["//tools/lint:__pkg__"],
+)

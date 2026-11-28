@@ -1,0 +1,38 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "go_default_library",
+    srcs = ["client.go"],
+    importpath = "github.com/chorong-sh/chorong/agentbus/internal/client",
+    visibility = ["//agentbus:__subpackages__"],
+    deps = [
+        "//agentbus/internal/config:go_default_library",
+        "//agentbus/internal/daemon:go_default_library",
+        "//agentbus/internal/paths:go_default_library",
+        "@org_golang_x_sys//unix:go_default_library",
+    ],
+)
+
+go_test(
+    name = "go_default_test",
+    srcs = [
+        "client_test.go",
+        "stream_test.go",
+    ],
+    embed = [":go_default_library"],
+    deps = [
+        "//agentbus/internal/config:go_default_library",
+        "//agentbus/internal/daemon:go_default_library",
+        "//agentbus/internal/paths:go_default_library",
+        "@org_golang_x_sys//unix:go_default_library",
+    ],
+)
+
+filegroup(
+    name = "go_srcs",
+    srcs = glob(
+        ["**/*.go"],
+        exclude = ["**/*_test.go"],
+    ),
+    visibility = ["//tools/lint:__pkg__"],
+)

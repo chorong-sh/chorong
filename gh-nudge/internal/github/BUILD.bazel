@@ -1,0 +1,60 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "go_default_library",
+    srcs = [
+        "approve.go",
+        "candidate.go",
+        "ghbin.go",
+        "ghjson.go",
+        "github.go",
+        "handoff.go",
+        "label_age.go",
+        "mergequeue.go",
+        "prreview.go",
+        "prsnapshot.go",
+        "rerequest.go",
+        "review_request_age.go",
+    ],
+    importpath = "github.com/chorong-sh/chorong/gh-nudge/internal/github",
+    visibility = ["//gh-nudge:__subpackages__"],
+    deps = [
+        "//gh-nudge/internal/models:go_default_library",
+        "//pkg/ghcli:go_default_library",
+        "//pkg/ghlimit:go_default_library",
+        "@com_github_jaeyeom_go_cmdexec//:go_default_library",
+    ],
+)
+
+go_test(
+    name = "go_default_test",
+    srcs = [
+        "approve_test.go",
+        "candidate_test.go",
+        "ghbin_test.go",
+        "ghjson_test.go",
+        "github_test.go",
+        "handoff_test.go",
+        "label_age_test.go",
+        "mergequeue_test.go",
+        "prreview_test.go",
+        "prsnapshot_test.go",
+        "rerequest_test.go",
+        "review_request_age_test.go",
+    ],
+    embed = [":go_default_library"],
+    deps = [
+        "//gh-nudge/internal/models:go_default_library",
+        "//pkg/ghcli:go_default_library",
+        "@com_github_jaeyeom_go_cmdexec//:go_default_library",
+    ],
+)
+
+filegroup(
+    name = "go_srcs",
+    srcs = glob(
+        ["**/*.go"],
+        exclude = ["**/*_test.go"],
+    ),
+    visibility = ["//tools/lint:__pkg__"],
+)

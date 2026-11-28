@@ -1,0 +1,28 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "go_default_library",
+    srcs = ["lastturn.go"],
+    importpath = "github.com/chorong-sh/chorong/agentbus/internal/lastturn",
+    visibility = ["//agentbus:__subpackages__"],
+    deps = [
+        "//agentbus/internal/adapter:go_default_library",
+        "//pkg/hubcall:go_default_library",
+    ],
+)
+
+go_test(
+    name = "go_default_test",
+    srcs = ["lastturn_test.go"],
+    embed = [":go_default_library"],
+    deps = ["//agentbus/internal/adapter:go_default_library"],
+)
+
+filegroup(
+    name = "go_srcs",
+    srcs = glob(
+        ["**/*.go"],
+        exclude = ["**/*_test.go"],
+    ),
+    visibility = ["//tools/lint:__pkg__"],
+)

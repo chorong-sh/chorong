@@ -1,0 +1,28 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "go_default_library",
+    srcs = ["roundcache.go"],
+    importpath = "github.com/chorong-sh/chorong/prsync/internal/roundcache",
+    visibility = ["//prsync:__subpackages__"],
+    deps = [
+        "//prsync/internal/gh:go_default_library",
+        "@com_github_google_renameio_v2//:go_default_library",
+    ],
+)
+
+go_test(
+    name = "go_default_test",
+    srcs = ["roundcache_test.go"],
+    embed = [":go_default_library"],
+    deps = ["//prsync/internal/gh:go_default_library"],
+)
+
+filegroup(
+    name = "go_srcs",
+    srcs = glob(
+        ["**/*.go"],
+        exclude = ["**/*_test.go"],
+    ),
+    visibility = ["//tools/lint:__pkg__"],
+)

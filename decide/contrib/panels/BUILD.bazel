@@ -1,0 +1,38 @@
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+sh_binary(
+    name = "tokens_sh",
+    srcs = ["tokens.sh"],
+    data = ["tokens.py"],
+)
+
+sh_binary(
+    name = "agent_memory_sh",
+    srcs = ["agent-memory.sh"],
+    data = ["agent_memory.py"],
+)
+
+sh_test(
+    name = "panels_test",
+    size = "small",
+    srcs = ["panels_test.sh"],
+    args = [
+        "$(rootpath //decide/cmd/decide)",
+        "$(rootpath tokens.sh)",
+        "$(rootpath agent-memory.sh)",
+    ],
+    data = [
+        "agent-memory.sh",
+        "agent_memory.py",
+        "tokens.py",
+        "tokens.sh",
+        "//decide/cmd/decide",
+    ],
+)
+
+filegroup(
+    name = "sh_srcs",
+    srcs = glob(["*.sh"]),
+    visibility = ["//tools/lint:__pkg__"],
+)

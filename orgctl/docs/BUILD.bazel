@@ -1,0 +1,4 @@
+exports_files(["reference.md"])
+
+# This file is new, so Emacs does not follow the runfiles symlink.
+# The linked files have to be runfiles themselves.

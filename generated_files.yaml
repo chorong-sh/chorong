@@ -1,0 +1,13 @@
+# Checked-in generated files and the commands that regenerate them.
+# Format: genfiles/README.md. `genfiles check` keeps .gitattributes
+# marking exactly these patterns.
+
+- pattern: gh-nudge/internal/config/pkl/*.pkl.go
+  comment: Go structs generated from gh-nudge/pkl/Config.pkl.
+  run:
+    - [make, generate-pkl]
+
+- pattern: /MODULE.bazel.lock
+  comment: Bazel module resolution of MODULE.bazel.
+  run:
+    - [bazel, mod, deps]

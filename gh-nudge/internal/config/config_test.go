@@ -1,0 +1,1664 @@
+package config
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+
+	"github.com/apple/pkl-go/pkl"
+
+	pklconfig "github.com/chorong-sh/chorong/gh-nudge/internal/config/pkl"
+)
+
+func TestMain(m *testing.M) {
+	if pklExec := resolvePklExec(); pklExec != "" {
+		_ = os.Setenv("PKL_EXEC", pklExec)
+	}
+	if pklCacheDir := resolvePklCacheDir(); pklCacheDir != "" {
+		_ = os.Setenv("PKL_CACHE_DIR", pklCacheDir)
+	}
+	os.Exit(m.Run())
+}
+
+// resolvePklExec returns the Bazel-fetched pkl CLI path from runfiles when
+// PKL_EXEC is unset, so Pkl config tests run hermetically without host pkl.
+func resolvePklExec() string {
+	if bin := os.Getenv("PKL_EXEC"); bin != "" {
+		return bin
+	}
+	return resolveRunfile(filepath.Join("*pkl-cli-*", "file", "downloaded"), false)
+}
+
+// resolvePklCacheDir returns the Bazel-fetched Pkl package cache directory from
+// runfiles when PKL_CACHE_DIR is unset, so Pkl config tests run hermetically
+// without network access.
+func resolvePklCacheDir() string {
+	if dir := os.Getenv("PKL_CACHE_DIR"); dir != "" {
+		return dir
+	}
+	return resolveRunfile(filepath.Join("*pkl_project", "packages"), true)
+}
+
+func resolveRunfile(relGlob string, wantDir bool) string {
+	for _, key := range []string{"RUNFILES_DIR", "TEST_SRCDIR"} {
+		root := os.Getenv(key)
+		if root == "" {
+			continue
+		}
+		matches, err := filepath.Glob(filepath.Join(root, relGlob))
+		if err != nil {
+			continue
+		}
+		for _, candidate := range matches {
+			info, err := os.Stat(candidate)
+			if err != nil || info.IsDir() != wantDir {
+				continue
+			}
+			if abs, err := filepath.Abs(candidate); err == nil {
+				return abs
+			}
+			return candidate
+		}
+	}
+	return ""
+}
+
+func TestResolvePklExec(t *testing.T) {
+	t.Run("PKL_EXEC env", func(t *testing.T) {
+		t.Setenv("PKL_EXEC", "/custom/pkl")
+		if got := resolvePklExec(); got != "/custom/pkl" {
+			t.Errorf("resolvePklExec() = %q, want /custom/pkl", got)
+		}
+	})
+
+	t.Run("runfiles", func(t *testing.T) {
+		dir := t.TempDir()
+		binPath := filepath.Join(dir, "rules_pkl++pkl+pkl-cli-linux-amd64", "file", "downloaded")
+		if err := os.MkdirAll(filepath.Dir(binPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(binPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PKL_EXEC", "")
+		t.Setenv("RUNFILES_DIR", dir)
+		t.Setenv("TEST_SRCDIR", "")
+		if got := resolvePklExec(); got != binPath {
+			t.Errorf("resolvePklExec() = %q, want %q", got, binPath)
+		}
+	})
+
+	t.Run("fallback to empty when not found", func(t *testing.T) {
+		empty := t.TempDir()
+		t.Setenv("PKL_EXEC", "")
+		t.Setenv("RUNFILES_DIR", empty)
+		t.Setenv("TEST_SRCDIR", empty)
+		if got := resolvePklExec(); got != "" {
+			t.Errorf("resolvePklExec() = %q, want empty", got)
+		}
+	})
+}
+
+func TestResolvePklCacheDir(t *testing.T) {
+	t.Run("PKL_CACHE_DIR env", func(t *testing.T) {
+		t.Setenv("PKL_CACHE_DIR", "/custom/pkl-cache")
+		if got := resolvePklCacheDir(); got != "/custom/pkl-cache" {
+			t.Errorf("resolvePklCacheDir() = %q, want /custom/pkl-cache", got)
+		}
+	})
+
+	t.Run("runfiles", func(t *testing.T) {
+		dir := t.TempDir()
+		cachePath := filepath.Join(dir, "rules_pkl++pkl+pkl_project", "packages")
+		if err := os.MkdirAll(cachePath, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PKL_CACHE_DIR", "")
+		t.Setenv("RUNFILES_DIR", dir)
+		t.Setenv("TEST_SRCDIR", "")
+		if got := resolvePklCacheDir(); got != cachePath {
+			t.Errorf("resolvePklCacheDir() = %q, want %q", got, cachePath)
+		}
+	})
+
+	t.Run("fallback to empty when not found", func(t *testing.T) {
+		empty := t.TempDir()
+		t.Setenv("PKL_CACHE_DIR", "")
+		t.Setenv("RUNFILES_DIR", empty)
+		t.Setenv("TEST_SRCDIR", empty)
+		if got := resolvePklCacheDir(); got != "" {
+			t.Errorf("resolvePklCacheDir() = %q, want empty", got)
+		}
+	})
+}
+
+func TestPklEvaluatorOptions(t *testing.T) {
+	t.Run("uses PKL_CACHE_DIR when set", func(t *testing.T) {
+		t.Setenv("PKL_CACHE_DIR", "/hermetic/pkl-cache")
+		var opts pkl.EvaluatorOptions
+		for _, fn := range pklEvaluatorOptions() {
+			fn(&opts)
+		}
+		if opts.CacheDir != "/hermetic/pkl-cache" {
+			t.Errorf("CacheDir = %q, want /hermetic/pkl-cache", opts.CacheDir)
+		}
+		if len(opts.AllowedModules) == 0 || len(opts.AllowedResources) == 0 {
+			t.Errorf("expected preconfigured modules and resources, got modules=%v resources=%v", opts.AllowedModules, opts.AllowedResources)
+		}
+	})
+
+	t.Run("falls back to default cache dir when PKL_CACHE_DIR is empty", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("PKL_CACHE_DIR", "")
+		var opts pkl.EvaluatorOptions
+		for _, fn := range pklEvaluatorOptions() {
+			fn(&opts)
+		}
+		want := filepath.Join(home, ".pkl", "cache")
+		if opts.CacheDir != want {
+			t.Errorf("CacheDir = %q, want %q", opts.CacheDir, want)
+		}
+	})
+}
+
+func TestLoadConfig(t *testing.T) {
+	t.Run("should load valid config file", func(t *testing.T) {
+		// Create a temporary config file
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "config.yaml")
+
+		configContent := `
+github:
+  owner: "test-org"
+  repos:
+    - "repo1"
+    - "repo2"
+
+slack:
+  token: "xoxb-test-token"
+  default_channel: "#code-reviews"
+  user_id_mapping:
+    "github-user1": "U12345"
+    "github-user2": "U67890"
+  dm_channel_id_mapping:
+    "github-user1": "C12345"
+    "github-user2": "C67890"
+  channel_routing:
+    - pattern: "frontend/.*\\.js$"
+      channel: "#frontend"
+    - pattern: "backend/.*\\.go$"
+      channel: "#backend"
+
+settings:
+  reminder_threshold_hours: 24
+  working_hours_only: true
+  message_template: "Hey <@{slack_id}>, the PR '{title}' has been waiting for your review for {hours} hours."
+  dm_by_default: true
+`
+		err := os.WriteFile(configPath, []byte(configContent), 0o600)
+		if err != nil {
+			t.Fatalf("Failed to write test config file: %v", err)
+		}
+
+		// Load the config
+		cfg, err := LoadConfig(configPath)
+		if err != nil {
+			t.Fatalf("Failed to load config: %v", err)
+		}
+
+		// Verify the config values
+		if cfg.GitHub.Owner != "test-org" {
+			t.Errorf("Expected GitHub owner 'test-org', got %q", cfg.GitHub.Owner)
+		}
+
+		if len(cfg.GitHub.Repos) != 2 {
+			t.Errorf("Expected 2 repos, got %d", len(cfg.GitHub.Repos))
+		}
+
+		if cfg.Slack.Token != "xoxb-test-token" {
+			t.Errorf("Expected Slack token 'xoxb-test-token', got %q", cfg.Slack.Token)
+		}
+
+		if cfg.Slack.DefaultChannel != "#code-reviews" {
+			t.Errorf("Expected default channel '#code-reviews', got %q", cfg.Slack.DefaultChannel)
+		}
+
+		if len(cfg.Slack.UserIDMapping) != 2 {
+			t.Errorf("Expected 2 user ID mappings, got %d", len(cfg.Slack.UserIDMapping))
+		}
+
+		if len(cfg.Slack.DMChannelIDMapping) != 2 {
+			t.Errorf("Expected 2 DM channel ID mappings, got %d", len(cfg.Slack.DMChannelIDMapping))
+		}
+
+		if len(cfg.Slack.ChannelRouting) != 2 {
+			t.Errorf("Expected 2 channel routings, got %d", len(cfg.Slack.ChannelRouting))
+		}
+
+		if cfg.Settings.ReminderThresholdHours != 24 {
+			t.Errorf("Expected reminder threshold 24, got %d", cfg.Settings.ReminderThresholdHours)
+		}
+
+		if !cfg.Settings.WorkingHoursOnly {
+			t.Error("Expected working hours only to be true")
+		}
+
+		if !cfg.Settings.DMByDefault {
+			t.Error("Expected DM by default to be true")
+		}
+	})
+
+	t.Run("should handle missing config file", func(t *testing.T) {
+		_, err := LoadConfig("/nonexistent/path/to/config.yaml")
+		if err == nil {
+			t.Error("Expected error for nonexistent config file, got nil")
+		}
+	})
+
+	t.Run("should handle invalid YAML", func(t *testing.T) {
+		// Create a temporary config file with invalid YAML
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "config.yaml")
+
+		configContent := `
+github:
+  owner: "test-org"
+  repos:
+    - "repo1"
+    - "repo2"
+slack: invalid-yaml-here
+`
+		err := os.WriteFile(configPath, []byte(configContent), 0o600)
+		if err != nil {
+			t.Fatalf("Failed to write test config file: %v", err)
+		}
+
+		// Load the config
+		_, err = LoadConfig(configPath)
+		if err == nil {
+			t.Error("Expected error for invalid YAML, got nil")
+		}
+	})
+
+	t.Run("should use default path when path is empty", func(t *testing.T) {
+		// When path is empty, LoadConfig tries to use $HOME/.config/gh-nudge/config.yaml
+		// We can't easily test this without setting up a real config file in the home directory,
+		// but we can verify that it attempts to use the correct path by checking the error message
+		_, err := LoadConfig("")
+
+		// Verify the error is related to home directory or default path
+		// In some test environments, $HOME may not be set, which is also a valid error case
+		expectedPathSuffix := filepath.Join(".config", "gh-nudge", "config.yaml")
+		if err != nil && !strings.Contains(err.Error(), expectedPathSuffix) && !strings.Contains(err.Error(), "home directory") {
+			t.Errorf("Expected error to contain default path %q or 'home directory', got: %v", expectedPathSuffix, err)
+		}
+	})
+
+	t.Run("should apply default values", func(t *testing.T) {
+		testCases := []struct {
+			name                     string
+			configContent            string
+			expectedThresholdHours   int
+			expectedMessageTemplate  string
+			expectedWorkingHoursOnly bool
+			expectedDMByDefault      bool
+		}{
+			{
+				name: "missing ReminderThresholdHours should default to 24",
+				configContent: `
+github:
+  owner: "test-org"
+  repos:
+    - "repo1"
+
+slack:
+  token: "xoxb-test-token"
+  default_channel: "#code-reviews"
+
+settings:
+  working_hours_only: true
+  message_template: "Custom message"
+  dm_by_default: false
+`,
+				expectedThresholdHours:   24,
+				expectedMessageTemplate:  "Custom message",
+				expectedWorkingHoursOnly: true,
+				expectedDMByDefault:      false,
+			},
+			{
+				name: "missing MessageTemplate should use default",
+				configContent: `
+github:
+  owner: "test-org"
+  repos:
+    - "repo1"
+
+slack:
+  token: "xoxb-test-token"
+  default_channel: "#code-reviews"
+
+settings:
+  reminder_threshold_hours: 48
+  working_hours_only: false
+  dm_by_default: true
+`,
+				expectedThresholdHours:   48,
+				expectedMessageTemplate:  "Hey <@{slack_id}>, the PR '{title}' has been waiting for your review for {hours} hours.",
+				expectedWorkingHoursOnly: false,
+				expectedDMByDefault:      true,
+			},
+			{
+				name: "missing both settings should use defaults",
+				configContent: `
+github:
+  owner: "test-org"
+  repos:
+    - "repo1"
+
+slack:
+  token: "xoxb-test-token"
+  default_channel: "#code-reviews"
+
+settings:
+  working_hours_only: true
+`,
+				expectedThresholdHours:   24,
+				expectedMessageTemplate:  "Hey <@{slack_id}>, the PR '{title}' has been waiting for your review for {hours} hours.",
+				expectedWorkingHoursOnly: true,
+				expectedDMByDefault:      false,
+			},
+			{
+				name: "empty settings section should use all defaults",
+				configContent: `
+github:
+  owner: "test-org"
+  repos:
+    - "repo1"
+
+slack:
+  token: "xoxb-test-token"
+  default_channel: "#code-reviews"
+
+settings:
+`,
+				expectedThresholdHours:   24,
+				expectedMessageTemplate:  "Hey <@{slack_id}>, the PR '{title}' has been waiting for your review for {hours} hours.",
+				expectedWorkingHoursOnly: false,
+				expectedDMByDefault:      false,
+			},
+		}
+
+		for _, tc := range testCases {
+			t.Run(tc.name, func(t *testing.T) {
+				tempDir := t.TempDir()
+				configPath := filepath.Join(tempDir, "config.yaml")
+
+				err := os.WriteFile(configPath, []byte(tc.configContent), 0o600)
+				if err != nil {
+					t.Fatalf("Failed to write test config file: %v", err)
+				}
+
+				cfg, err := LoadConfig(configPath)
+				if err != nil {
+					t.Fatalf("Failed to load config: %v", err)
+				}
+
+				if cfg.Settings.ReminderThresholdHours != tc.expectedThresholdHours {
+					t.Errorf("Expected reminder threshold hours %d, got %d",
+						tc.expectedThresholdHours, cfg.Settings.ReminderThresholdHours)
+				}
+
+				if cfg.Settings.MessageTemplate != tc.expectedMessageTemplate {
+					t.Errorf("Expected message template %q, got %q",
+						tc.expectedMessageTemplate, cfg.Settings.MessageTemplate)
+				}
+
+				if cfg.Settings.WorkingHoursOnly != tc.expectedWorkingHoursOnly {
+					t.Errorf("Expected working hours only %v, got %v",
+						tc.expectedWorkingHoursOnly, cfg.Settings.WorkingHoursOnly)
+				}
+
+				if cfg.Settings.DMByDefault != tc.expectedDMByDefault {
+					t.Errorf("Expected DM by default %v, got %v",
+						tc.expectedDMByDefault, cfg.Settings.DMByDefault)
+				}
+			})
+		}
+	})
+
+	t.Run("should handle minimal valid config", func(t *testing.T) {
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "config.yaml")
+
+		// Minimal valid config with just required fields
+		configContent := `
+github:
+  owner: "minimal-org"
+  repos:
+    - "minimal-repo"
+
+slack:
+  token: "xoxb-minimal-token"
+`
+		err := os.WriteFile(configPath, []byte(configContent), 0o600)
+		if err != nil {
+			t.Fatalf("Failed to write test config file: %v", err)
+		}
+
+		cfg, err := LoadConfig(configPath)
+		if err != nil {
+			t.Fatalf("Failed to load config: %v", err)
+		}
+
+		// Verify required fields
+		if cfg.GitHub.Owner != "minimal-org" {
+			t.Errorf("Expected GitHub owner 'minimal-org', got %q", cfg.GitHub.Owner)
+		}
+
+		if cfg.Slack.Token != "xoxb-minimal-token" {
+			t.Errorf("Expected Slack token 'xoxb-minimal-token', got %q", cfg.Slack.Token)
+		}
+
+		// Verify defaults are applied
+		if cfg.Settings.ReminderThresholdHours != 24 {
+			t.Errorf("Expected default reminder threshold 24, got %d", cfg.Settings.ReminderThresholdHours)
+		}
+
+		if cfg.Settings.MessageTemplate == "" {
+			t.Error("Expected default message template to be set, got empty string")
+		}
+	})
+
+	t.Run("should preserve explicit zero values", func(t *testing.T) {
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "config.yaml")
+
+		// Config with explicit zero/false values
+		configContent := `
+github:
+  owner: "test-org"
+  repos:
+    - "repo1"
+
+slack:
+  token: "xoxb-test-token"
+
+settings:
+  reminder_threshold_hours: 1  # Non-zero value
+  working_hours_only: false
+  dm_by_default: false
+  message_template: ""  # Explicitly empty
+`
+		err := os.WriteFile(configPath, []byte(configContent), 0o600)
+		if err != nil {
+			t.Fatalf("Failed to write test config file: %v", err)
+		}
+
+		cfg, err := LoadConfig(configPath)
+		if err != nil {
+			t.Fatalf("Failed to load config: %v", err)
+		}
+
+		// Verify that non-zero threshold is preserved
+		if cfg.Settings.ReminderThresholdHours != 1 {
+			t.Errorf("Expected reminder threshold 1, got %d", cfg.Settings.ReminderThresholdHours)
+		}
+
+		// Verify that empty message template gets the default
+		if cfg.Settings.MessageTemplate == "" {
+			t.Error("Expected default message template to be applied when empty, but got empty string")
+		}
+	})
+
+	t.Run("should handle channel routing correctly", func(t *testing.T) {
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "config.yaml")
+
+		configContent := `
+github:
+  owner: "test-org"
+  repos:
+    - "repo1"
+
+slack:
+  token: "xoxb-test-token"
+  channel_routing:
+    - pattern: ".*\\.go$"
+      channel: "#go-reviews"
+    - pattern: ".*\\.js$"
+      channel: "#js-reviews"
+`
+		err := os.WriteFile(configPath, []byte(configContent), 0o600)
+		if err != nil {
+			t.Fatalf("Failed to write test config file: %v", err)
+		}
+
+		cfg, err := LoadConfig(configPath)
+		if err != nil {
+			t.Fatalf("Failed to load config: %v", err)
+		}
+
+		if len(cfg.Slack.ChannelRouting) != 2 {
+			t.Fatalf("Expected 2 channel routing entries, got %d", len(cfg.Slack.ChannelRouting))
+		}
+
+		if cfg.Slack.ChannelRouting[0].Pattern != ".*\\.go$" {
+			t.Errorf("Expected first pattern '.*\\.go$', got %q", cfg.Slack.ChannelRouting[0].Pattern)
+		}
+
+		if cfg.Slack.ChannelRouting[0].Channel != "#go-reviews" {
+			t.Errorf("Expected first channel '#go-reviews', got %q", cfg.Slack.ChannelRouting[0].Channel)
+		}
+
+		if cfg.Slack.ChannelRouting[1].Pattern != ".*\\.js$" {
+			t.Errorf("Expected second pattern '.*\\.js$', got %q", cfg.Slack.ChannelRouting[1].Pattern)
+		}
+
+		if cfg.Slack.ChannelRouting[1].Channel != "#js-reviews" {
+			t.Errorf("Expected second channel '#js-reviews', got %q", cfg.Slack.ChannelRouting[1].Channel)
+		}
+	})
+
+	t.Run("should load label filter settings", func(t *testing.T) {
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "config.yaml")
+
+		configContent := `
+github:
+  owner: "test-org"
+  repos:
+    - "repo1"
+
+slack:
+  token: "xoxb-test-token"
+
+settings:
+  require_labels:
+    - "ready-for-review"
+  skip_labels:
+    - "wip"
+    - "do-not-nudge"
+`
+		err := os.WriteFile(configPath, []byte(configContent), 0o600)
+		if err != nil {
+			t.Fatalf("Failed to write test config file: %v", err)
+		}
+
+		cfg, err := LoadConfig(configPath)
+		if err != nil {
+			t.Fatalf("Failed to load config: %v", err)
+		}
+
+		if len(cfg.Settings.RequireLabels) != 1 || cfg.Settings.RequireLabels[0] != "ready-for-review" {
+			t.Errorf("Expected require_labels [ready-for-review], got %v", cfg.Settings.RequireLabels)
+		}
+		if len(cfg.Settings.SkipLabels) != 2 {
+			t.Fatalf("Expected 2 skip_labels, got %d", len(cfg.Settings.SkipLabels))
+		}
+		if cfg.Settings.SkipLabels[0] != "wip" || cfg.Settings.SkipLabels[1] != "do-not-nudge" {
+			t.Errorf("Expected skip_labels [wip do-not-nudge], got %v", cfg.Settings.SkipLabels)
+		}
+	})
+
+	t.Run("should load skip_users", func(t *testing.T) {
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "config.yaml")
+
+		configContent := `
+github:
+  owner: "test-org"
+  repos:
+    - "repo1"
+
+slack:
+  token: "xoxb-test-token"
+
+settings:
+  skip_users:
+    - "bot-account"
+    - "contractor-who-opted-out"
+`
+		err := os.WriteFile(configPath, []byte(configContent), 0o600)
+		if err != nil {
+			t.Fatalf("Failed to write test config file: %v", err)
+		}
+
+		cfg, err := LoadConfig(configPath)
+		if err != nil {
+			t.Fatalf("Failed to load config: %v", err)
+		}
+
+		if len(cfg.Settings.SkipUsers) != 2 {
+			t.Fatalf("Expected 2 skip_users, got %d", len(cfg.Settings.SkipUsers))
+		}
+		if cfg.Settings.SkipUsers[0] != "bot-account" || cfg.Settings.SkipUsers[1] != "contractor-who-opted-out" {
+			t.Errorf("Expected skip_users [bot-account contractor-who-opted-out], got %v", cfg.Settings.SkipUsers)
+		}
+	})
+
+	t.Run("should default label filters to empty", func(t *testing.T) {
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "config.yaml")
+
+		configContent := `
+github:
+  owner: "test-org"
+  repos:
+    - "repo1"
+
+slack:
+  token: "xoxb-test-token"
+`
+		err := os.WriteFile(configPath, []byte(configContent), 0o600)
+		if err != nil {
+			t.Fatalf("Failed to write test config file: %v", err)
+		}
+
+		cfg, err := LoadConfig(configPath)
+		if err != nil {
+			t.Fatalf("Failed to load config: %v", err)
+		}
+
+		if len(cfg.Settings.RequireLabels) != 0 {
+			t.Errorf("Expected empty require_labels, got %v", cfg.Settings.RequireLabels)
+		}
+		if len(cfg.Settings.SkipLabels) != 0 {
+			t.Errorf("Expected empty skip_labels, got %v", cfg.Settings.SkipLabels)
+		}
+		if len(cfg.Settings.SkipUsers) != 0 {
+			t.Errorf("Expected empty skip_users, got %v", cfg.Settings.SkipUsers)
+		}
+		if len(cfg.Settings.BlockMergeLabels) != 0 {
+			t.Errorf("Expected empty block_merge_labels, got %v", cfg.Settings.BlockMergeLabels)
+		}
+	})
+
+	t.Run("should load block_merge_labels", func(t *testing.T) {
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "config.yaml")
+
+		configContent := `
+github:
+  owner: "test-org"
+  repos:
+    - "repo1"
+
+slack:
+  token: "xoxb-test-token"
+
+settings:
+  block_merge_labels:
+    - "do-not-merge"
+    - "hold"
+`
+		err := os.WriteFile(configPath, []byte(configContent), 0o600)
+		if err != nil {
+			t.Fatalf("Failed to write test config file: %v", err)
+		}
+
+		cfg, err := LoadConfig(configPath)
+		if err != nil {
+			t.Fatalf("Failed to load config: %v", err)
+		}
+
+		if len(cfg.Settings.BlockMergeLabels) != 2 ||
+			cfg.Settings.BlockMergeLabels[0] != "do-not-merge" ||
+			cfg.Settings.BlockMergeLabels[1] != "hold" {
+			t.Errorf("Expected block_merge_labels [do-not-merge hold], got %v", cfg.Settings.BlockMergeLabels)
+		}
+	})
+}
+
+func TestConvertPklConfigLabelFilters(t *testing.T) {
+	pklCfg := &pklconfig.Config{
+		Settings: pklconfig.SettingsConfig{
+			ReminderThresholdHours: 24,
+			RequireLabels:          []string{"ready-for-review"},
+			SkipLabels:             []string{"wip", "do-not-nudge"},
+		},
+	}
+
+	cfg := convertPklConfig(pklCfg)
+
+	if len(cfg.Settings.RequireLabels) != 1 || cfg.Settings.RequireLabels[0] != "ready-for-review" {
+		t.Errorf("Expected require_labels [ready-for-review], got %v", cfg.Settings.RequireLabels)
+	}
+	if len(cfg.Settings.SkipLabels) != 2 || cfg.Settings.SkipLabels[0] != "wip" || cfg.Settings.SkipLabels[1] != "do-not-nudge" {
+		t.Errorf("Expected skip_labels [wip do-not-nudge], got %v", cfg.Settings.SkipLabels)
+	}
+}
+
+func TestLoadConfigRequireLabelAges(t *testing.T) {
+	t.Run("loads label age rules", func(t *testing.T) {
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "config.yaml")
+		configContent := `
+github:
+  owner: "test-org"
+  repos:
+    - "repo1"
+slack:
+  token: "xoxb-test-token"
+settings:
+  require_label_ages:
+    - label: "X"
+      min_hours: 24
+    - label: "Y"
+      min_hours: 48
+`
+		if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
+			t.Fatalf("Failed to write test config file: %v", err)
+		}
+
+		cfg, err := LoadConfig(configPath)
+		if err != nil {
+			t.Fatalf("LoadConfig() error = %v", err)
+		}
+		if len(cfg.Settings.RequireLabelAges) != 2 {
+			t.Fatalf("require_label_ages len = %d, want 2", len(cfg.Settings.RequireLabelAges))
+		}
+		if cfg.Settings.RequireLabelAges[0] != (LabelAgeConfig{Label: "X", MinHours: 24}) {
+			t.Errorf("first rule = %+v", cfg.Settings.RequireLabelAges[0])
+		}
+		if cfg.Settings.RequireLabelAges[1] != (LabelAgeConfig{Label: "Y", MinHours: 48}) {
+			t.Errorf("second rule = %+v", cfg.Settings.RequireLabelAges[1])
+		}
+	})
+
+	t.Run("defaults label age rules to empty", func(t *testing.T) {
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "config.yaml")
+		configContent := `
+github:
+  owner: "test-org"
+  repos:
+    - "repo1"
+slack:
+  token: "xoxb-test-token"
+`
+		if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
+			t.Fatalf("Failed to write test config file: %v", err)
+		}
+
+		cfg, err := LoadConfig(configPath)
+		if err != nil {
+			t.Fatalf("LoadConfig() error = %v", err)
+		}
+		if len(cfg.Settings.RequireLabelAges) != 0 {
+			t.Errorf("require_label_ages = %v, want empty", cfg.Settings.RequireLabelAges)
+		}
+	})
+
+	t.Run("rejects a non-positive min_hours", func(t *testing.T) {
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "config.yaml")
+		configContent := `
+github:
+  owner: "test-org"
+  repos:
+    - "repo1"
+slack:
+  token: "xoxb-test-token"
+settings:
+  require_label_ages:
+    - label: "X"
+      min_hours: 0
+`
+		if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
+			t.Fatalf("Failed to write test config file: %v", err)
+		}
+
+		_, err := LoadConfig(configPath)
+		if err == nil {
+			t.Fatal("LoadConfig() error = nil, want min_hours validation error")
+		}
+		if !strings.Contains(err.Error(), "min_hours") {
+			t.Errorf("LoadConfig() error = %v, want min_hours", err)
+		}
+	})
+
+	t.Run("rejects an empty label", func(t *testing.T) {
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "config.yaml")
+		configContent := `
+github:
+  owner: "test-org"
+  repos:
+    - "repo1"
+slack:
+  token: "xoxb-test-token"
+settings:
+  require_label_ages:
+    - label: ""
+      min_hours: 24
+`
+		if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
+			t.Fatalf("Failed to write test config file: %v", err)
+		}
+
+		_, err := LoadConfig(configPath)
+		if err == nil {
+			t.Fatal("LoadConfig() error = nil, want label validation error")
+		}
+		if !strings.Contains(err.Error(), "label") {
+			t.Errorf("LoadConfig() error = %v, want label", err)
+		}
+	})
+}
+
+func TestLoadConfigMinFirstReviewRequestHours(t *testing.T) {
+	writeConfig := func(t *testing.T, content string) string {
+		t.Helper()
+		configPath := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
+			t.Fatalf("Failed to write test config file: %v", err)
+		}
+		return configPath
+	}
+
+	t.Run("loads the minimum age of the first review request", func(t *testing.T) {
+		configPath := writeConfig(t, `
+github:
+  owner: "test-org"
+  repos:
+    - "repo1"
+slack:
+  token: "xoxb-test-token"
+settings:
+  min_first_review_request_hours: 24
+`)
+		cfg, err := LoadConfig(configPath)
+		if err != nil {
+			t.Fatalf("LoadConfig() error = %v", err)
+		}
+		if cfg.Settings.MinFirstReviewRequestHours != 24 {
+			t.Errorf("min_first_review_request_hours = %d, want 24", cfg.Settings.MinFirstReviewRequestHours)
+		}
+	})
+
+	t.Run("defaults the minimum age to zero", func(t *testing.T) {
+		configPath := writeConfig(t, `
+github:
+  owner: "test-org"
+  repos:
+    - "repo1"
+slack:
+  token: "xoxb-test-token"
+`)
+		cfg, err := LoadConfig(configPath)
+		if err != nil {
+			t.Fatalf("LoadConfig() error = %v", err)
+		}
+		if cfg.Settings.MinFirstReviewRequestHours != 0 {
+			t.Errorf("min_first_review_request_hours = %d, want 0", cfg.Settings.MinFirstReviewRequestHours)
+		}
+	})
+
+	t.Run("rejects a negative minimum age", func(t *testing.T) {
+		configPath := writeConfig(t, `
+github:
+  owner: "test-org"
+  repos:
+    - "repo1"
+slack:
+  token: "xoxb-test-token"
+settings:
+  min_first_review_request_hours: -1
+`)
+		_, err := LoadConfig(configPath)
+		if err == nil {
+			t.Fatal("LoadConfig() error = nil, want min_first_review_request_hours validation error")
+		}
+		if !strings.Contains(err.Error(), "min_first_review_request_hours") {
+			t.Errorf("LoadConfig() error = %v, want min_first_review_request_hours", err)
+		}
+	})
+}
+
+func TestConvertPklConfigRequireLabelAges(t *testing.T) {
+	pklCfg := &pklconfig.Config{
+		Settings: pklconfig.SettingsConfig{
+			ReminderThresholdHours: 24,
+			RequireLabelAges: []pklconfig.LabelAgeConfig{
+				{Label: "X", MinHours: 24},
+				{Label: "Y", MinHours: 48},
+			},
+		},
+	}
+
+	cfg := convertPklConfig(pklCfg)
+	if len(cfg.Settings.RequireLabelAges) != 2 {
+		t.Fatalf("require_label_ages len = %d, want 2", len(cfg.Settings.RequireLabelAges))
+	}
+	if cfg.Settings.RequireLabelAges[0] != (LabelAgeConfig{Label: "X", MinHours: 24}) {
+		t.Errorf("first rule = %+v", cfg.Settings.RequireLabelAges[0])
+	}
+	if cfg.Settings.RequireLabelAges[1] != (LabelAgeConfig{Label: "Y", MinHours: 48}) {
+		t.Errorf("second rule = %+v", cfg.Settings.RequireLabelAges[1])
+	}
+}
+
+func TestConvertPklConfigMinFirstReviewRequestHours(t *testing.T) {
+	pklCfg := &pklconfig.Config{
+		Settings: pklconfig.SettingsConfig{
+			ReminderThresholdHours:     24,
+			MinFirstReviewRequestHours: 24,
+		},
+	}
+
+	cfg := convertPklConfig(pklCfg)
+	if cfg.Settings.MinFirstReviewRequestHours != 24 {
+		t.Errorf("min_first_review_request_hours = %d, want 24", cfg.Settings.MinFirstReviewRequestHours)
+	}
+}
+
+func TestConvertPklConfigSkipUsers(t *testing.T) {
+	pklCfg := &pklconfig.Config{
+		Settings: pklconfig.SettingsConfig{
+			ReminderThresholdHours: 24,
+			SkipUsers:              []string{"bot-account", "contractor-who-opted-out"},
+		},
+	}
+
+	cfg := convertPklConfig(pklCfg)
+
+	if len(cfg.Settings.SkipUsers) != 2 || cfg.Settings.SkipUsers[0] != "bot-account" || cfg.Settings.SkipUsers[1] != "contractor-who-opted-out" {
+		t.Errorf("Expected skip_users [bot-account contractor-who-opted-out], got %v", cfg.Settings.SkipUsers)
+	}
+}
+
+func TestLoadConfigMergeQueueSettings(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configContent := `
+github:
+  repos:
+    - "repo1"
+slack:
+  token: "xoxb-test-token"
+settings:
+  required_checks:
+    - "ci"
+  flake_signatures:
+    - "connection reset"
+  rca_marker: "RCA {event_id} class={class}"
+  max_requeues: 0
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
+		t.Fatalf("Failed to write test config file: %v", err)
+	}
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+	if len(cfg.Settings.RequiredChecks) != 1 || cfg.Settings.RequiredChecks[0] != "ci" {
+		t.Errorf("required_checks = %v", cfg.Settings.RequiredChecks)
+	}
+	if len(cfg.Settings.FlakeSignatures) != 1 || cfg.Settings.FlakeSignatures[0] != "connection reset" {
+		t.Errorf("flake_signatures = %v", cfg.Settings.FlakeSignatures)
+	}
+	if cfg.Settings.RCAMarker != "RCA {event_id} class={class}" {
+		t.Errorf("rca_marker = %q", cfg.Settings.RCAMarker)
+	}
+	if cfg.Settings.RequeueLimit() != 0 {
+		t.Errorf("max_requeues = %d, want 0", cfg.Settings.RequeueLimit())
+	}
+}
+
+func TestLoadConfigDefaultUsesNudgeFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GH_MERGE_CONFIG", filepath.Join(home, "ignored.yaml"))
+	if err := os.WriteFile(filepath.Join(home, "ignored.yaml"), []byte("github:\n  owner: from-env\n  repos:\n    - no\nsettings: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	nudge := filepath.Join(home, ".config", "gh-nudge")
+	if err := os.MkdirAll(nudge, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nudge, "config.yaml"), []byte("github:\n  owner: nudge\n  repos:\n    - widgets\nsettings: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig("")
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.GitHub.Owner != "nudge" {
+		t.Fatalf("owner = %q, want nudge", cfg.GitHub.Owner)
+	}
+
+	if err := os.WriteFile(filepath.Join(nudge, "config.pkl"), []byte("not pkl"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(""); err == nil {
+		t.Fatal("LoadConfig() loaded yaml instead of config.pkl")
+	}
+}
+
+func TestLoadConfigMergeQueueDefaults(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configContent := `
+github:
+  repos:
+    - "repo1"
+slack:
+  token: "xoxb-test-token"
+settings: {}
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
+		t.Fatalf("Failed to write test config file: %v", err)
+	}
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+	if cfg.Settings.RequeueLimit() != DefaultMaxRequeues {
+		t.Errorf("max_requeues = %d, want default %d", cfg.Settings.RequeueLimit(), DefaultMaxRequeues)
+	}
+	if len(cfg.Settings.RequiredChecks) != 0 || cfg.Settings.RCAMarker != "" {
+		t.Errorf("expected empty queue gates, got %+v", cfg.Settings)
+	}
+	if cfg.Settings.FailureLogPattern != DefaultFailureLogPattern {
+		t.Errorf("failure_log_pattern = %q, want %q", cfg.Settings.FailureLogPattern, DefaultFailureLogPattern)
+	}
+}
+
+func TestLoadConfigRejectsBadFlakeSignature(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configContent := `
+github:
+  repos:
+    - "repo1"
+slack:
+  token: "xoxb-test-token"
+settings:
+  flake_signatures:
+    - "("
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
+		t.Fatalf("Failed to write test config file: %v", err)
+	}
+	if _, err := LoadConfig(configPath); err == nil {
+		t.Fatal("LoadConfig() error = nil, want invalid flake signature")
+	}
+}
+
+func TestLoadConfigFailureLogPattern(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configContent := `
+github:
+  repos:
+    - "repo1"
+settings:
+  failure_log_pattern: "^FATAL:"
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.Settings.FailureLogPattern != "^FATAL:" {
+		t.Fatalf("failure_log_pattern = %q", cfg.Settings.FailureLogPattern)
+	}
+
+	if err := os.WriteFile(configPath, []byte("github:\n  repos:\n    - repo1\nsettings:\n  failure_log_pattern: \"(\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(configPath); err == nil {
+		t.Fatal("LoadConfig() error = nil, want invalid failure_log_pattern")
+	}
+}
+
+func TestDefaultFailureLogPatternMatchesTimestampPrefix(t *testing.T) {
+	re := regexp.MustCompile(DefaultFailureLogPattern)
+	for _, line := range []string{"ERROR: setup failed", "(12:34:56) ERROR: setup failed"} {
+		if !re.MatchString(line) {
+			t.Errorf("pattern missed %q", line)
+		}
+	}
+}
+
+func TestLoadConfigCircleCILog(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("github:\n  repos:\n    - repo1\nsettings: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Settings.CircleCILog != CircleCILogAuto {
+		t.Fatalf("circleci_log = %q", cfg.Settings.CircleCILog)
+	}
+	if cfg.Settings.CircleCITokenFile != DefaultCircleCITokenFile {
+		t.Fatalf("circleci_token_file = %q, want %q", cfg.Settings.CircleCITokenFile, DefaultCircleCITokenFile)
+	}
+	if err := os.WriteFile(configPath, []byte("github:\n  repos:\n    - repo1\nsettings:\n  circleci_token_file: ~/custom/token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Settings.CircleCITokenFile != "~/custom/token" {
+		t.Fatalf("circleci_token_file = %q, want ~/custom/token", cfg.Settings.CircleCITokenFile)
+	}
+	if err := os.WriteFile(configPath, []byte("github:\n  repos:\n    - repo1\nsettings:\n  circleci_log: nope\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(configPath); err == nil {
+		t.Fatal("LoadConfig() error = nil, want invalid circleci_log")
+	}
+}
+
+func TestCircleCILogCommentMentionsUnsandboxed(t *testing.T) {
+	data, err := os.ReadFile(circleConfigPkl(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "circleci_log") || !strings.Contains(text, "unsandboxed environment") {
+		t.Fatalf("config comment = %s", text)
+	}
+}
+
+func circleConfigPkl(t *testing.T) string {
+	t.Helper()
+	candidates := []string{"../../pkl/Config.pkl"}
+	if dir := os.Getenv("TEST_SRCDIR"); dir != "" {
+		candidates = append(candidates,
+			filepath.Join(dir, "_main", "devtools/gh-nudge/pkl/Config.pkl"),
+			filepath.Join(dir, "devtools/gh-nudge/pkl/Config.pkl"),
+		)
+	}
+	for _, path := range candidates {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	t.Fatal("Config.pkl not found")
+	return ""
+}
+
+func TestConvertPklConfigBlockMergeLabels(t *testing.T) {
+	pklCfg := &pklconfig.Config{
+		Settings: pklconfig.SettingsConfig{
+			ReminderThresholdHours: 24,
+			BlockMergeLabels:       []string{"do-not-merge", "hold"},
+		},
+	}
+
+	cfg := convertPklConfig(pklCfg)
+
+	if len(cfg.Settings.BlockMergeLabels) != 2 ||
+		cfg.Settings.BlockMergeLabels[0] != "do-not-merge" ||
+		cfg.Settings.BlockMergeLabels[1] != "hold" {
+		t.Errorf("Expected block_merge_labels [do-not-merge hold], got %v", cfg.Settings.BlockMergeLabels)
+	}
+}
+
+func TestConvertPklConfigMergeQueue(t *testing.T) {
+	pklCfg := &pklconfig.Config{
+		Settings: pklconfig.SettingsConfig{
+			ReminderThresholdHours: 24,
+			RequiredChecks:         []string{"ci"},
+			FlakeSignatures:        []string{"connection reset"},
+			RcaMarker:              "RCA {event_id} class={class}",
+			MaxRequeues:            4,
+		},
+	}
+
+	cfg := convertPklConfig(pklCfg)
+	if len(cfg.Settings.RequiredChecks) != 1 || cfg.Settings.RequiredChecks[0] != "ci" {
+		t.Errorf("required_checks = %v", cfg.Settings.RequiredChecks)
+	}
+	if cfg.Settings.RCAMarker != "RCA {event_id} class={class}" {
+		t.Errorf("rca_marker = %q", cfg.Settings.RCAMarker)
+	}
+	if cfg.Settings.RequeueLimit() != 4 {
+		t.Errorf("max_requeues = %d, want 4", cfg.Settings.RequeueLimit())
+	}
+	if cfg.Settings.FailureLogPattern != DefaultFailureLogPattern {
+		t.Errorf("failure_log_pattern = %q, want default", cfg.Settings.FailureLogPattern)
+	}
+}
+
+func TestLoadConfigWithoutSlackBlock(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configContent := `
+github:
+  owner: "acme"
+  repos:
+    - "widgets"
+settings:
+  required_checks:
+    - "ci"
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
+		t.Fatalf("Failed to write test config file: %v", err)
+	}
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.Slack.Token != "" || cfg.Slack.DefaultChannel != "" {
+		t.Fatalf("slack = %+v, want empty", cfg.Slack)
+	}
+	if len(cfg.Settings.RequiredChecks) != 1 || cfg.Settings.RequiredChecks[0] != "ci" {
+		t.Fatalf("required_checks = %v", cfg.Settings.RequiredChecks)
+	}
+}
+
+func TestEffectiveSettingsInheritsUnsetAndReplacesEmpty(t *testing.T) {
+	limit := 4
+	zero := 0
+	empty := []string{}
+	checks := []string{"lint"}
+	marker := "entry-marker"
+	blank := ""
+	customPath := "/etc/circleci-token"
+	cfg := &Config{
+		Settings: SettingsConfig{
+			BlockMergeLabels:  []string{"do-not-merge"},
+			RequiredChecks:    []string{"ci"},
+			FlakeSignatures:   []string{"global-flake"},
+			RCAMarker:         "global-marker",
+			MaxRequeues:       &limit,
+			FailureLogPattern: "GLOBAL",
+			CircleCILog:       CircleCILogAPI,
+			CircleCITokenFile: customPath,
+		},
+		RepoSettings: map[string]RepoSettings{
+			"acme/widgets": {
+				RequiredChecks: &checks,
+				RCAMarker:      &marker,
+			},
+			"acme/empty": {
+				BlockMergeLabels:  &empty,
+				RequiredChecks:    &empty,
+				FlakeSignatures:   &empty,
+				RCAMarker:         &blank,
+				MaxRequeues:       &zero,
+				FailureLogPattern: &blank,
+				CircleCILog:       &blank,
+				CircleCITokenFile: &blank,
+			},
+			"acme/bare": {},
+		},
+	}
+
+	got, from := cfg.EffectiveSettings("acme", "widgets")
+	if from != "acme/widgets" || joinNames(got.RequiredChecks) != "lint" {
+		t.Fatalf("entry = %q %v", from, got.RequiredChecks)
+	}
+	if joinNames(got.BlockMergeLabels) != "do-not-merge" || got.RCAMarker != "entry-marker" {
+		t.Fatalf("inherited or replaced = %+v", got)
+	}
+	if got.RequeueLimit() != 4 || got.FailureLogPattern != "GLOBAL" || got.CircleCILog != CircleCILogAPI || got.CircleCITokenFile != "/etc/circleci-token" {
+		t.Fatalf("omitted fields = %+v", got)
+	}
+	if joinNames(got.FlakeSignatures) != "global-flake" {
+		t.Fatalf("flake_signatures = %v", got.FlakeSignatures)
+	}
+
+	got, from = cfg.EffectiveSettings("acme", "empty")
+	if from != "acme/empty" || len(got.BlockMergeLabels) != 0 || len(got.RequiredChecks) != 0 || len(got.FlakeSignatures) != 0 {
+		t.Fatalf("empty override = %q %+v", from, got)
+	}
+	if got.RCAMarker != "" || got.RequeueLimit() != 0 {
+		t.Fatalf("empty strings = marker %q limit %d", got.RCAMarker, got.RequeueLimit())
+	}
+	if got.FailureLogPattern != DefaultFailureLogPattern || got.CircleCILog != CircleCILogAuto || got.CircleCITokenFile != DefaultCircleCITokenFile {
+		t.Fatalf("empty pattern = %q circle = %q token_file = %q", got.FailureLogPattern, got.CircleCILog, got.CircleCITokenFile)
+	}
+
+	got, from = cfg.EffectiveSettings("acme", "bare")
+	if from != "acme/bare" || got.RCAMarker != "global-marker" || got.RequeueLimit() != 4 {
+		t.Fatalf("bare entry = %q %+v", from, got)
+	}
+	if joinNames(got.RequiredChecks) != "ci" || joinNames(got.BlockMergeLabels) != "do-not-merge" {
+		t.Fatalf("bare entry did not inherit lists: %+v", got)
+	}
+
+	got, from = cfg.EffectiveSettings("acme", "other")
+	if from != SettingsFromGlobal || joinNames(got.RequiredChecks) != "ci" {
+		t.Fatalf("missing entry = %q %v", from, got.RequiredChecks)
+	}
+	got.RequiredChecks[0] = "changed"
+	if cfg.Settings.RequiredChecks[0] != "ci" {
+		t.Fatalf("effective settings aliased the global list: %v", cfg.Settings.RequiredChecks)
+	}
+}
+
+func TestLoadYAMLRepoSettings(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+github:
+  owner: acme
+  repos:
+    - widgets
+settings:
+  required_checks:
+    - ci
+  block_merge_labels:
+    - do-not-merge
+  rca_marker: global-marker
+  max_requeues: 4
+repo_settings:
+  acme/widgets:
+    required_checks:
+      - lint
+  acme/empty:
+    block_merge_labels: []
+    required_checks: []
+  acme/bare: {}
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, from := cfg.EffectiveSettings("acme", "widgets")
+	if from != "acme/widgets" || joinNames(got.RequiredChecks) != "lint" || joinNames(got.BlockMergeLabels) != "do-not-merge" {
+		t.Fatalf("yaml entry = %q checks %v labels %v", from, got.RequiredChecks, got.BlockMergeLabels)
+	}
+	got, from = cfg.EffectiveSettings("acme", "empty")
+	if from != "acme/empty" || len(got.RequiredChecks) != 0 || len(got.BlockMergeLabels) != 0 {
+		t.Fatalf("yaml empty = %q checks %v labels %v", from, got.RequiredChecks, got.BlockMergeLabels)
+	}
+	if _, err := LoadConfig(writeConfig(t, dir, "bad.yaml", `
+github:
+  repos:
+    - widgets
+repo_settings:
+  acme/widgets:
+    flake_signatures:
+      - "("
+`)); err == nil || !strings.Contains(err.Error(), "repo_settings acme/widgets") {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+}
+
+func TestLoadPklRepoSettingsDistinguishesUnsetAndEmpty(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	schema, err := filepath.Abs(circleConfigPkl(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.pkl")
+	content := fmt.Sprintf(`
+amends "%s"
+
+github {
+  repos { "widgets" }
+}
+
+settings {
+  required_checks { "ci" }
+  block_merge_labels { "do-not-merge" }
+  flake_signatures { "global-flake" }
+  rca_marker = "global-marker"
+  max_requeues = 4
+  failure_log_pattern = "GLOBAL"
+  circleci_log = "api"
+  circleci_token_file = "/etc/circleci-token"
+}
+
+repo_settings {
+  ["acme/widgets"] {
+    required_checks { "lint" }
+    rca_marker = "entry-marker"
+  }
+  ["acme/empty"] {
+    block_merge_labels = new {}
+    required_checks = new {}
+    flake_signatures = new {}
+    rca_marker = ""
+    max_requeues = 0
+    failure_log_pattern = ""
+    circleci_log = ""
+    circleci_token_file = ""
+  }
+  ["acme/bare"] {}
+}
+`, schema)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, from := cfg.EffectiveSettings("acme", "widgets")
+	if from != "acme/widgets" || joinNames(got.RequiredChecks) != "lint" || got.RCAMarker != "entry-marker" {
+		t.Fatalf("pkl entry = %q checks %v marker %q", from, got.RequiredChecks, got.RCAMarker)
+	}
+	if joinNames(got.BlockMergeLabels) != "do-not-merge" || got.RequeueLimit() != 4 || got.CircleCILog != CircleCILogAPI || got.CircleCITokenFile != "/etc/circleci-token" {
+		t.Fatalf("pkl entry did not inherit: %+v", got)
+	}
+	entry := cfg.RepoSettings["acme/widgets"]
+	if entry.BlockMergeLabels != nil || entry.MaxRequeues != nil || entry.CircleCILog != nil || entry.CircleCITokenFile != nil {
+		t.Fatalf("unset pkl fields were not nil: %+v", entry)
+	}
+	empty := cfg.RepoSettings["acme/empty"]
+	if empty.BlockMergeLabels == nil || empty.RequiredChecks == nil || len(*empty.RequiredChecks) != 0 {
+		t.Fatalf("empty pkl lists = %+v", empty)
+	}
+	got, from = cfg.EffectiveSettings("acme", "empty")
+	if from != "acme/empty" || len(got.BlockMergeLabels) != 0 || got.RCAMarker != "" || got.RequeueLimit() != 0 {
+		t.Fatalf("pkl empty = %q %+v", from, got)
+	}
+	if got.FailureLogPattern != DefaultFailureLogPattern || got.CircleCILog != CircleCILogAuto || got.CircleCITokenFile != DefaultCircleCITokenFile {
+		t.Fatalf("pkl empty pattern = %q circle = %q token_file = %q", got.FailureLogPattern, got.CircleCILog, got.CircleCITokenFile)
+	}
+	got, from = cfg.EffectiveSettings("acme", "bare")
+	if from != "acme/bare" || joinNames(got.RequiredChecks) != "ci" || got.FailureLogPattern != "GLOBAL" {
+		t.Fatalf("pkl bare = %q %+v", from, got)
+	}
+}
+
+func joinNames(items []string) string {
+	return strings.Join(items, ",")
+}
+
+func TestLoadPklRerequestConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	schema, err := filepath.Abs(circleConfigPkl(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("loads exclude_reviewers when configured", func(t *testing.T) {
+		path := writeConfig(t, t.TempDir(), "config.pkl", fmt.Sprintf(`amends %q
+
+github {
+  repos { "widgets" }
+}
+
+rerequest {
+  exclude_reviewers {
+    "*-bot"
+    "agent-*"
+    "exact-bot-user"
+  }
+}
+`, schema))
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			t.Fatalf("LoadConfig() error = %v", err)
+		}
+		want := "*-bot,agent-*,exact-bot-user"
+		if got := joinNames(cfg.Rerequest.ExcludeReviewers); got != want {
+			t.Fatalf("ExcludeReviewers = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("rerequest section is optional", func(t *testing.T) {
+		path := writeConfig(t, t.TempDir(), "config.pkl", fmt.Sprintf(`amends %q
+
+github {
+  repos { "widgets" }
+}
+`, schema))
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			t.Fatalf("LoadConfig() error = %v", err)
+		}
+		if len(cfg.Rerequest.ExcludeReviewers) != 0 {
+			t.Fatalf("ExcludeReviewers = %v, want empty", cfg.Rerequest.ExcludeReviewers)
+		}
+	})
+
+	t.Run("invalid glob pattern fails config validation", func(t *testing.T) {
+		path := writeConfig(t, t.TempDir(), "config.pkl", fmt.Sprintf(`amends %q
+
+github {
+  repos { "widgets" }
+}
+
+rerequest {
+  exclude_reviewers {
+    "unclosed["
+  }
+}
+`, schema))
+		if _, err := LoadConfig(path); err == nil {
+			t.Fatal("expected error for invalid glob pattern, got nil")
+		}
+	})
+}
+
+func TestLoadOptionalConfig(t *testing.T) {
+	t.Run("missing default config returns empty config without error", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		cfg, err := LoadOptionalConfig("")
+		if err != nil {
+			t.Fatalf("LoadOptionalConfig(\"\") error = %v", err)
+		}
+		if len(cfg.Rerequest.ExcludeReviewers) != 0 {
+			t.Fatalf("ExcludeReviewers = %v, want empty", cfg.Rerequest.ExcludeReviewers)
+		}
+	})
+
+	t.Run("explicit missing path still returns error", func(t *testing.T) {
+		if _, err := LoadOptionalConfig("/nonexistent/config.pkl"); err == nil {
+			t.Fatal("expected error for explicit missing config path, got nil")
+		}
+	})
+
+	t.Run("present default pkl config is loaded", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		schema, err := filepath.Abs(circleConfigPkl(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfgDir := filepath.Join(home, ".config", "gh-nudge")
+		if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeConfig(t, cfgDir, "config.pkl", fmt.Sprintf(`amends %q
+
+github {
+  repos { "widgets" }
+}
+
+rerequest {
+  exclude_reviewers { "*-bot" }
+}
+`, schema))
+
+		cfg, err := LoadOptionalConfig("")
+		if err != nil {
+			t.Fatalf("LoadOptionalConfig(\"\") error = %v", err)
+		}
+		if got := joinNames(cfg.Rerequest.ExcludeReviewers); got != "*-bot" {
+			t.Fatalf("ExcludeReviewers = %q, want %q", got, "*-bot")
+		}
+	})
+}
+
+func TestLoadPklReviewPostConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	schema, err := filepath.Abs(circleConfigPkl(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("loads review_post when configured", func(t *testing.T) {
+		path := writeConfig(t, t.TempDir(), "config.pkl", fmt.Sprintf(`amends %q
+
+github {
+  repos { "widgets" }
+}
+
+review_post {
+  via_outbox = true
+  owner = "review-agent"
+  outbox_command {
+    "/usr/local/bin/gh-outbox"
+    "--flag"
+  }
+}
+`, schema))
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			t.Fatalf("LoadConfig() error = %v", err)
+		}
+		if !cfg.ReviewPost.ViaOutbox {
+			t.Fatal("ReviewPost.ViaOutbox = false, want true")
+		}
+		if cfg.ReviewPost.Owner != "review-agent" {
+			t.Fatalf("ReviewPost.Owner = %q, want %q", cfg.ReviewPost.Owner, "review-agent")
+		}
+		if got := joinNames(cfg.ReviewPost.EffectiveOutboxCommand()); got != "/usr/local/bin/gh-outbox,--flag" {
+			t.Fatalf("EffectiveOutboxCommand() = %q, want %q", got, "/usr/local/bin/gh-outbox,--flag")
+		}
+	})
+
+	t.Run("review_post section is optional and defaults off", func(t *testing.T) {
+		path := writeConfig(t, t.TempDir(), "config.pkl", fmt.Sprintf(`amends %q
+
+github {
+  repos { "widgets" }
+}
+`, schema))
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			t.Fatalf("LoadConfig() error = %v", err)
+		}
+		if cfg.ReviewPost.ViaOutbox {
+			t.Fatal("ReviewPost.ViaOutbox = true, want false")
+		}
+		if cfg.ReviewPost.Owner != "" {
+			t.Fatalf("ReviewPost.Owner = %q, want empty", cfg.ReviewPost.Owner)
+		}
+		if got := joinNames(cfg.ReviewPost.EffectiveOutboxCommand()); got != "gh-outbox" {
+			t.Fatalf("EffectiveOutboxCommand() = %q, want %q", got, "gh-outbox")
+		}
+	})
+}
+
+func writeConfig(t *testing.T, dir, name, content string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}

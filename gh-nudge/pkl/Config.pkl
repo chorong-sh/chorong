@@ -1,0 +1,357 @@
+@go.Package { name = "github.com/chorong-sh/chorong/gh-nudge/internal/config/pkl" }
+module gh_nudge.Config
+
+import "package://pkg.pkl-lang.org/pkl-go/pkl.golang@0.14.0#/go.pkl"
+
+/// GitHub-related configuration
+class GitHubConfig {
+  /// Repository owner (organization or user). Defaults to authenticated user.
+  owner: String?
+  /// List of repository names to monitor
+  repos: Listing<String>
+}
+
+/// Channel routing rule based on file patterns
+class ChannelRoutingConfig {
+  /// Regex pattern to match file paths
+  pattern: String
+  /// Slack channel to route matching PRs to
+  channel: String
+}
+
+/// A label that must have been on the pull request for a minimum time.
+class LabelAgeConfig {
+  /// Label name. Matched exactly, including case.
+  label: String(!isEmpty)
+  /// Minimum hours since that label was most recently added.
+  min_hours: Int(this > 0)
+}
+
+/// Slack-related configuration.
+/// gh-merge queue and watch do not read these fields. Empty values are valid.
+class SlackConfig {
+  /// Slack Bot OAuth token (starts with xoxb-). Empty when Slack is unused.
+  token: String = ""
+  /// Fallback channel if no routing patterns match. Empty when Slack is unused.
+  default_channel: String = ""
+  /// GitHub username to Slack user ID mapping (for @mentions)
+  user_id_mapping: Mapping<String, String> = new {}
+  /// GitHub username to Slack DM channel ID mapping
+  dm_channel_id_mapping: Mapping<String, String> = new {}
+  /// Channel routing rules based on file patterns
+  channel_routing: Listing<ChannelRoutingConfig> = new {}
+}
+
+/// General application settings
+class SettingsConfig {
+  /// Hours between reminder notifications for the same outstanding review request
+  reminder_threshold_hours: Int(this > 0) = 24
+  /// Only send notifications during working hours
+  working_hours_only: Boolean = false
+  /// Template for reminder messages. Variables: {slack_id}, {title}, {hours}, {url}
+  message_template: String = "Hey <@{slack_id}>, the PR '{title}' has been waiting for your review for {hours} hours."
+  /// Send DMs to reviewers by default instead of channel messages
+  dm_by_default: Boolean = false
+  /// Skip nudging unless the PR has all of these labels. Empty means no requirement.
+  require_labels: Listing<String> = new {}
+  /// Skip nudging if the PR has any of these labels. Empty means no skip filter.
+  skip_labels: Listing<String> = new {}
+  /// Skip nudging these GitHub users. Empty means no users are skipped.
+  /// Skipped users do not need a Slack user ID mapping.
+  skip_users: Listing<String> = new {}
+  /// Each entry must be present and at least this old since it was last added.
+  /// Empty means no label-age requirement. Every entry is required.
+  require_label_ages: Listing<LabelAgeConfig> = new {}
+  /// Minimum hours since this reviewer was first requested on the pull request.
+  /// Zero means no first-request age requirement. A later request does not restart the clock.
+  min_first_review_request_hours: Int(this >= 0) = 0
+  /// Labels that stop gh-merge from merging a pull request.
+  /// gh-nudge ignores this list. Empty means no label blocks a merge.
+  /// Names match exactly, including case. For example, "do-not-merge".
+  block_merge_labels: Listing<String> = new {}
+  /// Check names that must be green before gh-merge queue enqueues.
+  /// Empty makes queue refuse unless --allow-no-required-checks is set.
+  /// Names match exactly, including case.
+  required_checks: Listing<String> = new {}
+  /// Regular expressions matched against a failing merge-queue job's
+  /// failure output: the log lines failure_log_pattern selects and the
+  /// failing tests' output. The rest of the log gives no hints.
+  /// A match is a hint, not a verdict. Empty means no hints.
+  flake_signatures: Listing<String> = new {}
+  /// Comment template that must match before a removed pull request can be
+  /// queued again. Placeholders are {event_id} and {class}.
+  /// Class is our-code, flake, infra, or manual. Empty matches nothing.
+  rca_marker: String = ""
+  /// How many earlier flake or infra requeues are allowed.
+  /// gh-merge queue refuses when the timeline count is greater than this.
+  /// Zero means no requeue is allowed.
+  max_requeues: Int(this >= 0) = 2
+  /// Lines of a CircleCI failing step that match this regular expression are
+  /// printed with the log tail. An invalid pattern fails config load.
+  /// The default matches a line that starts with ERROR: and a timestamp
+  /// prefix such as (12:34:56) ERROR:.
+  failure_log_pattern: String = #"^(?:[(][0-9]{2}:[0-9]{2}:[0-9]{2}[)] )?ERROR:"#
+  /// How gh-merge reads CircleCI logs: auto, api, or cli.
+  /// auto uses the HTTP API when CIRCLE_TOKEN is set, and the circleci CLI otherwise.
+  /// api keeps the HTTP path. cli uses the CLI even when a token is set and does
+  /// not call the HTTP API.
+  /// The CLI may read its token from the system keyring and then needs an unsandboxed environment.
+  circleci_log: String = "auto"
+  /// Path to a file containing the CircleCI API token (mode 0600 or stricter).
+  /// Leading ~ is expanded and symlinks are followed.
+  /// Ignored when CIRCLE_TOKEN is set in the environment.
+  /// A missing file at the default path falls back to the circleci CLI's own login.
+  circleci_token_file: String = "~/.config/secrets/circleci-token"
+}
+
+/// Settings gh-merge reads for one repository.
+/// A field set on the entry replaces the global field.
+/// A field left unset inherits the global field.
+/// An explicit empty list is set, and it does not inherit.
+/// gh-nudge ignores this class.
+class RepoSettings {
+  /// Labels that stop gh-merge from merging a pull request.
+  /// Unset inherits settings.block_merge_labels. An empty list blocks nothing.
+  block_merge_labels: Listing<String>?
+  /// Check names that must be green before gh-merge queue enqueues.
+  /// Unset inherits settings.required_checks.
+  /// An empty list still makes queue refuse unless --allow-no-required-checks is set.
+  required_checks: Listing<String>?
+  /// Regular expressions matched against a failing merge-queue log.
+  /// Unset inherits settings.flake_signatures. An empty list adds no hints.
+  flake_signatures: Listing<String>?
+  /// Comment template that must match before a removed pull request can be
+  /// queued again. Placeholders are {event_id} and {class}.
+  /// Unset inherits settings.rca_marker. An empty string matches nothing.
+  rca_marker: String?
+  /// How many earlier flake or infra requeues are allowed.
+  /// Unset inherits settings.max_requeues. Zero means no requeue is allowed.
+  max_requeues: Int(this >= 0)?
+  /// Lines of a CircleCI failing step that match this regular expression.
+  /// Unset inherits settings.failure_log_pattern.
+  /// An empty string uses the default pattern.
+  failure_log_pattern: String?
+  /// How gh-merge reads CircleCI logs: auto, api, or cli.
+  /// Unset inherits settings.circleci_log. An empty string means auto.
+  circleci_log: String?
+  /// Path to a file containing the CircleCI API token (mode 0600 or stricter).
+  /// Unset inherits settings.circleci_token_file. An empty string uses the default path.
+  circleci_token_file: String?
+}
+
+/// One gh-approve rule. Every condition in a rule must hold (AND).
+/// A pull request matches when any rule matches (OR).
+/// A list left empty and an Int left unset add no condition.
+class ApproveRule {
+  /// Rule name. It is shown in output, written to the audit log, and
+  /// appended to the approval body as <!-- gh-approve: <name> -->.
+  name: String(!isEmpty)
+  /// What a matching rule does. "approve" approves the pull request.
+  /// "handoff" requests `reviewers`, then removes you as an individual
+  /// requested reviewer. A hand-off never approves.
+  action: String(this == "approve" || this == "handoff") = "approve"
+  /// Logins to request on a hand-off. Required for a hand-off rule and not
+  /// allowed on an approve rule.
+  reviewers: Listing<String(!isEmpty)> = new {}
+  /// Repositories as owner/name or globs such as "acme/*".
+  repos: Listing<String> = new {}
+  /// Globs. Every changed file must match one of them.
+  paths_all_match: Listing<String> = new {}
+  /// Globs. No changed file may match any of them.
+  paths_none_match: Listing<String> = new {}
+  /// Globs. At least one changed file must match one of them.
+  paths_any_match: Listing<String> = new {}
+  /// When true, every changed file must be in paths_any_match, or be owned
+  /// (per the base branch's CODEOWNERS) by neither you nor a team of yours,
+  /// or be owned only by teams of yours that have other members and are
+  /// requested reviewers. Unreadable CODEOWNERS or team data fails it.
+  /// Team membership needs the read:org scope.
+  codeowners_covered: Boolean = false
+  /// When true, every changed file's CODEOWNERS owners (per the base branch's
+  /// CODEOWNERS) must include neither you nor any team you belong to. Unlike
+  /// codeowners_covered, there is no exception for teams with other members or
+  /// requested reviewers, and no paths_any_match escape. Unreadable CODEOWNERS,
+  /// unreadable team membership, or an email owner fails the check. Team
+  /// membership needs the read:org scope.
+  codeowners_none_mine: Boolean = false
+  /// Maximum added plus deleted lines.
+  max_changed_lines: Int(this >= 0)?
+  /// Maximum added lines.
+  max_added_lines: Int(this >= 0)?
+  /// Maximum changed files.
+  max_files: Int(this >= 0)?
+  /// When true, the pull request must add no lines.
+  pure_deletion: Boolean = false
+  /// When true, at least one line is deleted and every added line is
+  /// blank or a comment in that file's language. Patches are read only
+  /// when a rule sets this. A missing or binary patch fails the rule.
+  deletions_and_comments_only: Boolean = false
+  /// PR author logins. The author must be one of them.
+  authors_allow: Listing<String> = new {}
+  /// PR author logins. The author must not be one of them.
+  authors_deny: Listing<String> = new {}
+  /// Labels that must all be present. Names match exactly, including case.
+  labels_required: Listing<String> = new {}
+  /// Labels that must all be absent. Names match exactly, including case.
+  labels_forbidden: Listing<String> = new {}
+  /// Logins whose latest review on the current head SHA must be APPROVED.
+  required_approvals_by: Listing<String> = new {}
+  /// "green": no check failed and every required check passed.
+  /// "allow_pending": no check failed. Pending checks are allowed.
+  /// Unset adds no check condition.
+  checks: String(this == "green" || this == "allow_pending")?
+  /// When true, a draft pull request does not match.
+  not_draft: Boolean = true
+  /// Maximum unresolved review threads.
+  max_unresolved_threads: Int(this >= 0) = 0
+  /// Optional command, as argv, run only after every other condition of the
+  /// rule passed. It is run directly, not through a shell. Its stdin is a JSON
+  /// object with the PR metadata, the changed files, and the diff. It must
+  /// print {"decision": "approve" | "defer", "reason": "..."}. A non-zero
+  /// exit, a timeout, invalid JSON, or an unknown decision counts as defer.
+  /// Empty adds no condition.
+  agent_command: Listing<String(!isEmpty)> = new {}
+  /// How long agent_command may run. Its process group is killed after that.
+  agent_timeout: Duration(value > 0) = 120.s
+  /// Cache agent_command's approve and defer decisions by input hash. Set
+  /// false to run the command on every pass.
+  agent_cache: Boolean = true
+  /// When true, the rule also runs when you are requested only through a
+  /// team you belong to. Other rules still skip such a pull request. Not
+  /// allowed on a hand-off rule.
+  requested_via_team: Boolean = false
+  /// When true, "my files" are the changed files whose CODEOWNERS owners
+  /// (base branch, last matching line) include you or a team of yours.
+  /// At least one must exist, and each must change only comment or blank
+  /// lines, deleted lines included. Unreadable CODEOWNERS, team data, or
+  /// patches fail it. Team membership needs the read:org scope.
+  mine_comments_only: Boolean = false
+  /// Approval body for this rule, overriding approve.body. Placeholders:
+  /// {my_files} (paths of my files), {my_teams} (your owning teams, or your
+  /// login), and {rule} (the rule name). {my_files} and {my_teams} need
+  /// mine_comments_only. An unknown placeholder is a config error. A body
+  /// with placeholders is used as written; one without gets the rule name
+  /// appended as approve.body does. Not allowed on a hand-off rule.
+  body: String(!isEmpty)?
+  /// Per-file checks, mapping a glob pattern to a built-in name
+  /// ("only-deletions" or "deletions-and-comments-only") or a script
+  /// (a path relative to the config file with ~ expanded, or an argv list
+  /// run without a shell). The most specific matching pattern wins.
+  file_checks: Mapping<String, String(!isEmpty) | Listing<String(!isEmpty)>> = new {}
+  /// How long a file_checks script may run. Its process group is killed after that.
+  file_checks_timeout: Duration(value > 0) = 30.s
+  /// When true, files whose file_checks check returns approve are marked
+  /// viewed on the pull request (subject to viewed.never_mark and max_marks_per_run).
+  mark_viewed_on_pass: Boolean = true
+}
+
+/// One gh-approve "mark viewed" rule. A changed file is marked when the
+/// repos filter matches and any selector matches: a paths_match glob, or
+/// codeowners_not_mine when the file's owners include neither the user
+/// nor a team the user belongs to. paths_none_match keeps a match visible
+/// for this rule. Another rule can still mark it.
+class ViewedRule {
+  /// Rule name. It is shown in --explain and written to the audit log.
+  name: String(!isEmpty)
+  /// Repositories as owner/name or globs such as "acme/*". Empty matches every repo.
+  repos: Listing<String> = new {}
+  /// Globs. A changed file matching any of them is marked viewed.
+  paths_match: Listing<String> = new {}
+  /// Globs. A changed file matching any of them is not marked by this rule,
+  /// even when a selector matches. Another rule can still mark it.
+  paths_none_match: Listing<String> = new {}
+  /// Alias of paths_none_match. Setting both on one rule is a config error.
+  except_paths: Listing<String> = new {}
+  /// When true, mark a file whose CODEOWNERS owners include neither the
+  /// user nor a team the user belongs to. Unreadable CODEOWNERS or team
+  /// data marks nothing for that pull request.
+  codeowners_not_mine: Boolean = false
+}
+
+/// gh-approve "mark viewed" settings. Off by default. gh-nudge and
+/// gh-merge ignore this section.
+class ViewedConfig {
+  /// When false, gh-approve never marks a file viewed.
+  enabled: Boolean = false
+  /// How many files one run may mark. Zero marks nothing.
+  max_marks_per_run: Int(this >= 0) = 200
+  /// Globs. A changed file matching any of them is never marked, by any rule.
+  /// This wins over every rule's selectors.
+  never_mark: Listing<String> = new {}
+  /// When true (the default), plain viewed rules also re-mark DISMISSED files
+  /// (files that changed since you last viewed them). Set to false to mark
+  /// only UNVIEWED files.
+  remark_dismissed: Boolean = true
+  /// Rules. A file is marked when any rule selects it and never_mark does not.
+  rules: Listing<ViewedRule> = new {}
+}
+
+/// gh-approve settings. gh-nudge and gh-merge ignore this section.
+class ApproveConfig {
+  /// Approval body. The matching rule name is appended as an HTML comment.
+  body: String(!isEmpty) = "LGTM"
+  /// Skip a pull request the user already approved at the current head.
+  skip_already_approved: Boolean = true
+  /// Skip a pull request with an open CHANGES_REQUESTED review from any reviewer.
+  skip_open_change_requests: Boolean = false
+  /// How long a cached agent_command decision is reused.
+  agent_cache_ttl: Duration(value > 0) = 7.d
+  /// Size limit of the agent_command decision cache. The oldest entries are
+  /// evicted first.
+  agent_cache_max_mb: Int(this > 0) = 50
+  /// A pull request with more changed files than this has no file patches
+  /// fetched. A condition that needs patches then fails with "too large to
+  /// check".
+  patch_max_files: Int(this > 0) = 300
+  /// Like patch_max_files, for the number of added lines in the pull request.
+  patch_max_added_lines: Int(this > 0) = 5000
+  /// Stop starting new pull requests after this limit; the current one finishes.
+  /// Null means no run limit.
+  max_duration: Duration(value > 0)? = null
+  /// Maximum concurrent uncached pull request loads.
+  load_concurrency: Int(this > 0) = 4
+  /// How long per-commit PR facts are kept for PRs that are no longer candidates.
+  pr_cache_ttl: Duration(value > 0) = 7.d
+  /// Rules. A pull request that matches none of them is left for a human.
+  rules: Listing<ApproveRule> = new {}
+}
+
+/// gh-pr-review rerequest settings. gh-nudge, gh-approve, and gh-merge ignore
+/// this section.
+class RerequestConfig {
+  /// Reviewer logins or glob patterns (such as "*-bot" or "agent-*") to skip
+  /// when re-requesting reviewers, in addition to GitHub Bot accounts.
+  exclude_reviewers: Listing<String(!isEmpty)> = new {}
+}
+
+/// gh-pr-review submit settings. gh-nudge, gh-approve, and gh-merge ignore
+/// this section.
+class ReviewPostConfig {
+  /// When true, `gh-pr-review submit` hands comments to `gh-outbox` instead of
+  /// posting directly to GitHub. Off by default.
+  via_outbox: Boolean = false
+  /// Default `--owner` agentbus name passed to `gh-outbox submit`.
+  owner: String = ""
+  /// Command, as argv, used to invoke `gh-outbox`. Empty defaults to ["gh-outbox"].
+  outbox_command: Listing<String(!isEmpty)> = new {}
+}
+
+/// Root configuration
+github: GitHubConfig
+slack: SlackConfig = new {}
+settings: SettingsConfig = new {}
+/// gh-merge settings for one <owner>/<repo> key.
+/// A missing key uses the global settings. gh-nudge ignores this mapping.
+/// An explicit empty list on an entry does not inherit the global list.
+repo_settings: Mapping<String, RepoSettings> = new {}
+/// gh-approve rules and settings.
+approve: ApproveConfig = new {}
+/// gh-approve "mark viewed" rules. Off unless enabled.
+viewed: ViewedConfig = new {}
+/// Per-repository paths to YAML files listing generated-file globs,
+/// keyed by <owner>/<repo>. Rules can reference the list with "@generated".
+generated_lists: Mapping<String, String(!isEmpty)> = new {}
+/// gh-pr-review rerequest settings.
+rerequest: RerequestConfig = new {}
+/// gh-pr-review submit settings.
+review_post: ReviewPostConfig = new {}
