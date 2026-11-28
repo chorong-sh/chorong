@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/chorong-sh/chorong/compare/v0.1.0...v0.1.1) (2026-11-28)
+
+
+### Bug Fixes
+
+* **release:** quote GoReleaser ldflags and migrate repo guardrails ([534a73b](https://github.com/chorong-sh/chorong/commit/534a73b3b7c3d2a7431c56b19f62b65c71816344))
+
 ## 0.1.0 (2026-11-28)
 
 
