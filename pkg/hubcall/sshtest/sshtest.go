@@ -9,13 +9,17 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
 // sshScript answers `ssh -G` from $dir/port and otherwise records argv
 // and runs the last argument with sh, as a remote login shell would.
+// It resolves its per-test directory from $0 so a single static shim file
+// can be symlinked into each test's TempDir without writing fresh executables
+// during parallel tests (avoiding Linux ETXTBSY under concurrent fork/exec).
 const sshScript = `#!/bin/sh
-d=%DIR%
+d=$(dirname "$0")
 if [ "$1" = "-G" ]; then
   echo "hostname 127.0.0.1"
   echo "port $(cat "$d/port" 2>/dev/null || echo 9)"
@@ -34,8 +38,8 @@ exec sh -c "$cmd"
 // exists, then prints $dir/<tool>.stdout and $dir/<tool>.stderr and
 // exits with $dir/<tool>.code.
 const toolScript = `#!/bin/sh
-d=%DIR%
-t=%TOOL%
+d=$(dirname "$0")
+t=$(basename "$0")
 printf '%s\n' "$@" > "$d/$t.args"
 cat > "$d/$t.stdin"
 printf '%s' "$AGENTBUS_AS_HANDLE" > "$d/$t.handle"
@@ -45,6 +49,40 @@ env > "$d/$t.env"
 [ -e "$d/$t.stderr" ] && cat "$d/$t.stderr" >&2
 exit "$(cat "$d/$t.code" 2>/dev/null || echo 0)"
 `
+
+var (
+	shimOnce     sync.Once
+	shimSSHPath  string
+	shimToolPath string
+	shimErr      error
+)
+
+func ensureShims(t testing.TB) (string, string) {
+	t.Helper()
+	shimOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "sshtest-shims-*")
+		if err != nil {
+			shimErr = err
+			return
+		}
+		sshPath := filepath.Join(dir, "ssh.sh")
+		if err := os.WriteFile(sshPath, []byte(sshScript), 0o755); err != nil { //nolint:gosec // test executable
+			shimErr = err
+			return
+		}
+		toolPath := filepath.Join(dir, "tool.sh")
+		if err := os.WriteFile(toolPath, []byte(toolScript), 0o755); err != nil { //nolint:gosec // test executable
+			shimErr = err
+			return
+		}
+		shimSSHPath = sshPath
+		shimToolPath = toolPath
+	})
+	if shimErr != nil {
+		t.Fatal(shimErr)
+	}
+	return shimSSHPath, shimToolPath
+}
 
 // Fake is an ssh on PATH controlled by files in its directory:
 //
@@ -78,9 +116,10 @@ func InstallInEnv(t testing.TB, env *[]string) *Fake {
 
 func install(t testing.TB) *Fake {
 	t.Helper()
+	sshShim, _ := ensureShims(t)
 	dir := t.TempDir()
 	f := &Fake{t: t, dir: dir}
-	f.writeExec("ssh", strings.ReplaceAll(sshScript, "%DIR%", dir))
+	f.linkExec("ssh", sshShim)
 	return f
 }
 
@@ -121,13 +160,15 @@ func PrependPath(env []string, dir string) []string {
 // the fake ssh runs. See toolScript for what it records and prints.
 func (f *Fake) InstallTool(tool string) {
 	f.t.Helper()
-	body := strings.ReplaceAll(strings.ReplaceAll(toolScript, "%DIR%", f.dir), "%TOOL%", tool)
-	f.writeExec(tool, body)
+	_, toolShim := ensureShims(f.t)
+	f.linkExec(tool, toolShim)
 }
 
-func (f *Fake) writeExec(name, body string) {
+func (f *Fake) linkExec(name, target string) {
 	f.t.Helper()
-	if err := os.WriteFile(filepath.Join(f.dir, name), []byte(body), 0o755); err != nil { //nolint:gosec // test executable
+	dst := filepath.Join(f.dir, name)
+	_ = os.Remove(dst)
+	if err := os.Symlink(target, dst); err != nil {
 		f.t.Fatal(err)
 	}
 }

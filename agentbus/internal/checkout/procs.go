@@ -142,6 +142,22 @@ func procfs(dir string) ([]Proc, error) {
 	return out, nil
 }
 
+// darwinLsofFallback is macOS's standard lsof location when PATH omits
+// /usr/sbin (for example under launchd or Bazel --incompatible_strict_action_env).
+const darwinLsofFallback = "/usr/sbin/lsof"
+
+func lookupLsof(goos string, lookPath func(string) (string, error), stat func(string) (os.FileInfo, error)) string {
+	if p, err := lookPath("lsof"); err == nil {
+		return p
+	}
+	if goos == "darwin" {
+		if _, err := stat(darwinLsofFallback); err == nil {
+			return darwinLsofFallback
+		}
+	}
+	return "lsof"
+}
+
 // lsofProcs reads working directories from lsof and names and parents
 // from ps.
 func lsofProcs() ([]Proc, error) {
@@ -149,7 +165,8 @@ func lsofProcs() ([]Proc, error) {
 	defer cancel()
 	// lsof exits 1 when it cannot read some processes; its output still
 	// lists the rest.
-	out, err := exec.CommandContext(ctx, "lsof", "-n", "-P", "-w", "-d", "cwd", "-F", "pn").Output()
+	lsofBin := lookupLsof(runtime.GOOS, exec.LookPath, os.Stat)
+	out, err := exec.CommandContext(ctx, lsofBin, "-n", "-P", "-w", "-d", "cwd", "-F", "pn").Output() //nolint:gosec // G204: lsofBin is resolved from PATH or /usr/sbin/lsof
 	if err != nil && len(out) == 0 {
 		return nil, fmt.Errorf("lsof: %w", err)
 	}

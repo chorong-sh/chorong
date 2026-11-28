@@ -30,6 +30,14 @@ const (
 // waitDelay bounds how long Run waits for output pipes after a kill.
 const waitDelay = time.Second
 
+// etxtbsyMaxAttempts and etxtbsyBaseDelay bound retries when execve returns
+// ETXTBSY on Linux under concurrent fork/exec (Go issue #22315).
+const (
+	etxtbsyMaxAttempts = 8
+	etxtbsyBaseDelay   = 5 * time.Millisecond
+	etxtbsyMaxDelay    = 50 * time.Millisecond
+)
+
 // UnreachableError means the machine could not be reached. It is not a
 // failure of the command on that machine.
 type UnreachableError struct {
@@ -96,19 +104,32 @@ func RunIOEnvNoTerminal(ctx context.Context, env []string, stdin io.Reader, stdo
 }
 
 func runIO(ctx context.Context, env []string, detach bool, stdin io.Reader, stdout, stderr io.Writer, name string, args ...string) (Result, error) {
-	// The caller names the binary, such as herdr or ssh, and passes an
-	// argument list, not a shell line.
-	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
-	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // G702: argv from the caller, not a shell line
-	if len(env) > 0 {
-		cmd.Env = env
+	newCmd := func() *exec.Cmd {
+		// The caller names the binary, such as herdr or ssh, and passes an
+		// argument list, not a shell line.
+		// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
+		cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // G702: argv from the caller, not a shell line
+		if len(env) > 0 {
+			cmd.Env = env
+		}
+		cmd.Stdin = stdin
+		cmd.Stdout = stdout
+		cmd.Stderr = stderr
+		setProcessGroup(cmd, detach)
+		cmd.WaitDelay = waitDelay
+		return cmd
 	}
-	cmd.Stdin = stdin
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	setProcessGroup(cmd, detach)
-	cmd.WaitDelay = waitDelay
-	err := cmd.Run()
+
+	cmd, err := startWithETXTBSYRetry(ctx, func() (*exec.Cmd, error) {
+		c := newCmd()
+		if err := c.Start(); err != nil {
+			return nil, err
+		}
+		return c, nil
+	})
+	if err == nil {
+		err = cmd.Wait()
+	}
 	res := Result{TimedOut: errors.Is(ctx.Err(), context.DeadlineExceeded)}
 	if err == nil {
 		return res, nil
@@ -118,11 +139,31 @@ func runIO(ctx context.Context, env []string, detach bool, stdin io.Reader, stdo
 		res.Code = exitErr.ExitCode()
 		return res, nil
 	}
-	if ctx.Err() != nil && cmd.Process != nil {
+	if ctx.Err() != nil && cmd != nil && cmd.Process != nil {
 		res.Code = -1
 		return res, nil
 	}
 	return res, fmt.Errorf("run %s: %w", name, err)
+}
+
+func startWithETXTBSYRetry[T any](ctx context.Context, start func() (T, error)) (T, error) {
+	var zero T
+	delay := etxtbsyBaseDelay
+	for attempt := 0; attempt < etxtbsyMaxAttempts; attempt++ {
+		v, err := start()
+		if err == nil || !isETXTBSY(err) || attempt == etxtbsyMaxAttempts-1 {
+			return v, err
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return zero, err
+		case <-timer.C:
+		}
+		delay = min(delay*2, etxtbsyMaxDelay)
+	}
+	return zero, nil
 }
 
 // Probe reports whether the machine's host answers a quick check that

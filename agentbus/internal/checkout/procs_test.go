@@ -158,3 +158,28 @@ func TestListProcsFindsASleepInTheCheckoutButNotAnInteractiveShell(t *testing.T)
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+func TestLookupLsof(t *testing.T) {
+	notFound := func(string) (string, error) { return "", exec.ErrNotFound }
+	foundInPath := func(string) (string, error) { return "/opt/bin/lsof", nil }
+	statExists := func(p string) (os.FileInfo, error) {
+		if p == darwinLsofFallback {
+			return nil, nil
+		}
+		return nil, os.ErrNotExist
+	}
+	statMissing := func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+
+	if got := lookupLsof("darwin", foundInPath, statExists); got != "/opt/bin/lsof" {
+		t.Errorf("PATH lookup = %q, want /opt/bin/lsof", got)
+	}
+	if got := lookupLsof("darwin", notFound, statExists); got != darwinLsofFallback {
+		t.Errorf("darwin fallback = %q, want %q", got, darwinLsofFallback)
+	}
+	if got := lookupLsof("darwin", notFound, statMissing); got != "lsof" {
+		t.Errorf("darwin missing fallback = %q, want lsof", got)
+	}
+	if got := lookupLsof("linux", notFound, statExists); got != "lsof" {
+		t.Errorf("linux fallback = %q, want lsof", got)
+	}
+}

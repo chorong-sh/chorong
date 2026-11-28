@@ -6,13 +6,16 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
 // script records argv in $dir/argv and answers from files in $dir.
-// See Fake for the files it reads.
+// See Fake for the files it reads. It resolves its per-test directory from $0
+// so one static shim can be symlinked into each test's TempDir without writing
+// fresh executables during parallel tests (avoiding Linux ETXTBSY).
 const script = `#!/bin/sh
-d=%DIR%
+d=$(dirname "$0")
 printf '%s\n' "$*" >> "$d/argv"
 if [ "$1" = "--version" ]; then echo "herdr 0.8.1"; exit 0; fi
 m=local
@@ -120,11 +123,38 @@ func InstallInEnv(t testing.TB, env *[]string) *Fake {
 	return f
 }
 
+var (
+	herdrShimOnce sync.Once
+	herdrShimPath string
+	herdrShimErr  error
+)
+
+func ensureHerdrShim(t testing.TB) string {
+	t.Helper()
+	herdrShimOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "herdrtest-shim-*")
+		if err != nil {
+			herdrShimErr = err
+			return
+		}
+		p := filepath.Join(dir, "herdr.sh")
+		if err := os.WriteFile(p, []byte(script), 0o755); err != nil { //nolint:gosec // test executable
+			herdrShimErr = err
+			return
+		}
+		herdrShimPath = p
+	})
+	if herdrShimErr != nil {
+		t.Fatal(herdrShimErr)
+	}
+	return herdrShimPath
+}
+
 func install(t testing.TB) *Fake {
 	t.Helper()
+	shim := ensureHerdrShim(t)
 	dir := t.TempDir()
-	body := strings.ReplaceAll(script, "%DIR%", dir)
-	if err := os.WriteFile(filepath.Join(dir, "herdr"), []byte(body), 0o755); err != nil { //nolint:gosec // test executable
+	if err := os.Symlink(shim, filepath.Join(dir, "herdr")); err != nil {
 		t.Fatal(err)
 	}
 	return &Fake{t: t, dir: dir}
