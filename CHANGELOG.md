@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/chorong-sh/chorong/compare/v0.1.1...v0.1.2) (2026-11-28)
+
+
+### Bug Fixes
+
+* **agentbus,remotecall:** eliminate parallel ETXTBSY flake and add macOS lsof fallback ([fc46ff6](https://github.com/chorong-sh/chorong/commit/fc46ff646eeb0368a0cf2441b9c2bc581ee2e877))
+
 ## [0.1.1](https://github.com/chorong-sh/chorong/compare/v0.1.0...v0.1.1) (2026-11-28)
 
 
